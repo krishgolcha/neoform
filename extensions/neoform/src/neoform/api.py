@@ -45,9 +45,14 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     application.state.runtime = selected
+    web_origins = {
+        selected.settings.web_origin,
+        selected.settings.web_origin.replace("localhost", "127.0.0.1"),
+        selected.settings.web_origin.replace("127.0.0.1", "localhost"),
+    }
     application.add_middleware(
         CORSMiddleware,
-        allow_origins=[selected.settings.web_origin],
+        allow_origins=sorted(web_origins),
         allow_credentials=False,
         allow_methods=["GET", "POST"],
         allow_headers=["Content-Type", "Last-Event-ID"],

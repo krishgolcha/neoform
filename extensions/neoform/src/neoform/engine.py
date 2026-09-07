@@ -77,17 +77,31 @@ class EvolutionEngine:
             for generation in range(spec.search.generations):
                 await self._wait_if_paused(evolution_id, control)
                 parents = survivors or [None]
-                ids = []
-                for ordinal in range(spec.search.population):
-                    parent = parents[ordinal % len(parents)]
-                    candidate_id = self.store.create_candidate(
-                        evolution_id,
-                        generation,
-                        ordinal,
-                        self._genotype(spec, generation, ordinal),
-                        parent["id"] if parent else None,
-                    )
-                    ids.append(candidate_id)
+                generation_candidates = [
+                    item
+                    for item in self.store.list_candidates(evolution_id)
+                    if item["generation"] == generation
+                ]
+                if not generation_candidates:
+                    for ordinal in range(spec.search.population):
+                        parent = parents[ordinal % len(parents)]
+                        self.store.create_candidate(
+                            evolution_id,
+                            generation,
+                            ordinal,
+                            self._genotype(spec, generation, ordinal),
+                            parent["id"] if parent else None,
+                        )
+                    generation_candidates = [
+                        item
+                        for item in self.store.list_candidates(evolution_id)
+                        if item["generation"] == generation
+                    ]
+                ids = [
+                    item["id"]
+                    for item in generation_candidates
+                    if item["status"] == CandidateStatus.QUEUED
+                ]
                 semaphore = asyncio.Semaphore(spec.search.max_concurrency)
 
                 async def execute(
@@ -104,7 +118,8 @@ class EvolutionEngine:
                             control,
                         )
 
-                await asyncio.gather(*(execute(candidate_id) for candidate_id in ids))
+                if ids:
+                    await asyncio.gather(*(execute(candidate_id) for candidate_id in ids))
                 completed = [
                     item
                     for item in self.store.list_candidates(evolution_id)

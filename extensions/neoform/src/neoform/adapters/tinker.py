@@ -15,13 +15,16 @@ from .base import LabAdapter
 class TinkerAdapter(LabAdapter):
     def __init__(self, api_key: str | None = None):
         self.api_key = api_key or os.getenv("TINKER_API_KEY")
+
+    def _require_key(self) -> str:
         if not self.api_key:
             raise RuntimeError("TINKER_API_KEY is required for live NEOFORM runs")
+        return self.api_key
 
     def _service(self, spec: EvolutionSpec | None = None):
         import tinker
 
-        kwargs: dict[str, Any] = {"api_key": self.api_key}
+        kwargs: dict[str, Any] = {"api_key": self._require_key()}
         if spec and spec.project_id:
             kwargs["project_id"] = spec.project_id
         return tinker.ServiceClient(**kwargs)
@@ -186,7 +189,7 @@ class TinkerAdapter(LabAdapter):
         async with httpx.AsyncClient(timeout=120) as client:
             response = await client.post(
                 f"{base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {self.api_key}"},
+                headers={"Authorization": f"Bearer {self._require_key()}"},
                 json=payload,
             )
             response.raise_for_status()

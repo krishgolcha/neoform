@@ -106,14 +106,12 @@ const defaultSpec = {
     learning_rate_min: 0.00002,
     learning_rate_max: 0.0002,
     temperatures: [0.6, 0.8, 1],
-    loss_functions: ["importance_sampling", "ppo", "cispo"],
-    advantage_clips: [1, 2, 5],
+    loss_functions: ["cross_entropy"],
+    advantage_clips: [1],
     optimizer_modes: ["resume", "reset"],
   },
   benchmarks: [
-    { name: "gsm8k", weight: 0.55, examples: 100 },
-    { name: "math500", weight: 0.3, examples: 50 },
-    { name: "ifeval", weight: 0.15, examples: 50 },
+    { name: "arithmetic_exact_match", weight: 1, examples: 4 },
   ],
 };
 

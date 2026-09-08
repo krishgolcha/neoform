@@ -53,10 +53,8 @@ class MutationSpace(BaseModel):
     learning_rate_min: float = Field(default=2e-5, gt=0)
     learning_rate_max: float = Field(default=2e-4, gt=0)
     temperatures: list[float] = Field(default_factory=lambda: [0.6, 0.8, 1.0])
-    loss_functions: list[str] = Field(
-        default_factory=lambda: ["importance_sampling", "ppo", "cispo"]
-    )
-    advantage_clips: list[float] = Field(default_factory=lambda: [1.0, 2.0, 5.0])
+    loss_functions: list[str] = Field(default_factory=lambda: ["cross_entropy"])
+    advantage_clips: list[float] = Field(default_factory=lambda: [1.0])
     optimizer_modes: list[str] = Field(default_factory=lambda: ["resume", "reset"])
 
     @model_validator(mode="after")
@@ -79,9 +77,7 @@ class EvolutionSpec(BaseModel):
     mutations: MutationSpace = Field(default_factory=MutationSpace)
     benchmarks: list[BenchmarkSpec] = Field(
         default_factory=lambda: [
-            BenchmarkSpec(name="gsm8k", weight=0.55, examples=100),
-            BenchmarkSpec(name="math500", weight=0.30, examples=50),
-            BenchmarkSpec(name="ifeval", weight=0.15, examples=50),
+            BenchmarkSpec(name="arithmetic_exact_match", weight=1.0, examples=4),
         ]
     )
 
@@ -134,4 +130,3 @@ class Event(BaseModel):
     type: str
     data: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-

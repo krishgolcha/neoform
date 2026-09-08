@@ -1,0 +1,20 @@
+{
+  "name": "Reasoning frontier",
+  "base_model": "Qwen/Qwen3.5-4B",
+  "seed": 2026,
+  "max_usd": 10,
+  "checkpoint_ttl_days": 7,
+  "search": {
+    "population": 4,
+    "generations": 3,
+    "survivors": 2,
+    "rank": 32,
+    "steps_per_candidate": 25,
+    "batch_size": 8,
+    "max_sequence_tokens": 1024,
+    "max_concurrency": 2
+  },
+  "benchmarks": [
+    { "name": "arithmetic_exact_match", "weight": 1.0, "examples": 4 }
+  ]
+}

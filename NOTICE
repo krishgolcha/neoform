@@ -1,0 +1,16 @@
+NEOFORM
+Copyright 2026 Krish Golcha
+
+NEOFORM is licensed under the Apache License, Version 2.0.
+
+This repository is a derivative fork of the Tinker Python SDK developed by
+Thinking Machines Lab. The original Tinker source, generated client code,
+documentation, and associated files retain their original copyright ownership
+and Apache-2.0 licensing. NEOFORM does not remove or supersede those notices.
+
+New work located under extensions/neoform, together with NEOFORM-specific
+documentation, packaging, and automation, was created for NEOFORM by Krish Golcha.
+
+Tinker and Thinking Machines Lab are names of their respective owners. NEOFORM
+is an independent project and is not endorsed by or affiliated with Thinking
+Machines Lab.

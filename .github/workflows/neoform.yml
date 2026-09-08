@@ -1,0 +1,63 @@
+name: NEOFORM
+
+on:
+  push:
+    branches: [main, "codex/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+      - name: Upstream SDK regression tests
+        run: >-
+          uv run --no-project --python 3.11 --with-editable .
+          --with pytest --with pytest-asyncio --with pytest-xdist pytest -q -n 0
+          tests/test_qs.py
+          tests/test_cli_output.py
+          tests/test_tensor_container.py
+          tests/test_checkpoint_delete.py
+      - name: NEOFORM tests
+        working-directory: extensions/neoform
+        run: |
+          uv sync --extra dev
+          uv run ruff check src tests
+          uv run pytest --cov=neoform --cov-report=term-missing
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: extensions/neoform/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: extensions/neoform/web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm build
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:e2e
+
+  containers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build engine image
+        run: docker build -f extensions/neoform/Dockerfile -t neoform-engine:test .
+      - name: Build web image
+        run: docker build -t neoform-web:test extensions/neoform/web

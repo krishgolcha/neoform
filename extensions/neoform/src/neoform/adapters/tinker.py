@@ -54,6 +54,11 @@ class TinkerAdapter(LabAdapter):
         genotype: Genotype,
         parent_state: str | None,
     ) -> TrainingResult:
+        if genotype.loss_function != "cross_entropy":
+            raise ValueError(
+                "The live Tinker adapter currently supports only cross_entropy training"
+            )
+
         from tinker import types
 
         service = self._service(spec)
@@ -97,7 +102,7 @@ class TinkerAdapter(LabAdapter):
                         },
                     )
                 )
-            future = await training.forward_backward_async(batch, "cross_entropy")
+            future = await training.forward_backward_async(batch, genotype.loss_function)
             result = await future.result_async()
             loss = getattr(result, "loss", None)
             if loss is not None:
@@ -139,6 +144,13 @@ class TinkerAdapter(LabAdapter):
     async def evaluate(
         self, sampler_checkpoint: str, spec: EvolutionSpec, genotype: Genotype
     ) -> EvaluationResult:
+        supported_benchmark = "arithmetic_exact_match"
+        unsupported = [item.name for item in spec.benchmarks if item.name != supported_benchmark]
+        if unsupported:
+            raise ValueError(
+                "The live Tinker adapter does not have evaluators for: " + ", ".join(unsupported)
+            )
+
         from tinker import types
 
         service = self._service(spec)
@@ -150,6 +162,12 @@ class TinkerAdapter(LabAdapter):
             ("A team places 18 beams per day for 6 days. Total?", "108"),
             ("What is 31 + 47? Give only the answer.", "78"),
         ]
+        requested_examples = spec.benchmarks[0].examples
+        if requested_examples > len(tasks):
+            raise ValueError(
+                f"{supported_benchmark} supports at most {len(tasks)} examples in v0.1"
+            )
+        tasks = tasks[:requested_examples]
         correct = 0
         prompt_tokens = 0
         sample_tokens = 0
@@ -173,7 +191,7 @@ class TinkerAdapter(LabAdapter):
             correct += reward
             examples.append({"prompt": prompt, "response": text, "reward": reward})
         accuracy = correct / len(tasks)
-        scores = {benchmark.name: accuracy for benchmark in spec.benchmarks}
+        scores = {supported_benchmark: accuracy}
         return EvaluationResult(
             scores=scores,
             latency_ms=(time.perf_counter() - started) * 1000 / len(tasks),

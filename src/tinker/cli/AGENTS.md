@@ -58,11 +58,15 @@ class LazyGroup(click.Group):
 
 **Examples**:
 - `tinker version` - Show CLI and SDK version
+- `tinker auth login` - Log in through the browser (WorkOS device auth) and store the minted API key
+- `tinker auth login --api-key` - Store a manually entered API key in ~/.tinker/credentials.json
+- `tinker auth logout` - Remove the default credential; a browser-minted key is also deleted on the server, a manually entered key is only removed locally
 - `tinker run list` - List all training runs
 - `tinker run info <run-id>` - Show details of a specific run
 - `tinker checkpoint list` - List all checkpoints
 - `tinker checkpoint info <checkpoint-id>` - Show checkpoint details
 - `tinker checkpoint push-hf <checkpoint-path>` - Upload a checkpoint to Hugging Face Hub
+- `tinker session export-trace <session-id>` - Export a session's timeline as a Perfetto trace
 
 ### 4. Output System with Inheritance
 
@@ -213,11 +217,17 @@ cli/
 ├── lazy_group.py         # LazyGroup implementation for lazy loading
 ├── output.py             # OutputBase class and formatting utilities
 ├── client.py             # SDK client creation and error handling
+├── workos_api.py         # Typed WorkOS API client (wire protocol only)
+├── device_auth.py        # WorkOS device authorization grant flow (OAuth 2.0 RFC 8628)
+├── auth_api.py           # Tinker auth endpoints reachable without a stored credential
+├── login.py              # Browser login flow: device auth -> minted key -> credential store
 ├── commands/
 │   ├── __init__.py       # Command module marker
+│   ├── auth.py           # Auth commands (credential storage)
 │   ├── version.py        # Version command
 │   ├── run.py            # Run commands and output classes
-│   └── checkpoint.py     # Checkpoint commands and output classes
+│   ├── checkpoint.py     # Checkpoint commands and output classes
+│   └── session.py        # Session commands and output classes
 └── CLAUDE.md             # This documentation
 ```
 
@@ -226,6 +236,16 @@ cli/
 ```bash
 # Show version
 tinker version
+
+# Log in through the browser: prints a code + URL, mints an API key, makes it the default
+tinker auth login
+
+# Store an API key (interactive prompt for the key) and make it the default
+tinker auth login --api-key
+
+# Remove the default credential; deletes a browser-minted key on the server,
+# leaves a manually entered key active and only removes it locally
+tinker auth logout
 
 # List all training runs
 tinker run list
@@ -244,6 +264,10 @@ tinker checkpoint info ckpt-xyz789
 
 # Upload checkpoint to Hugging Face Hub
 tinker checkpoint push-hf tinker://run-abc123/sampler_weights/000040 --repo username/my-lora-adapter
+
+# Export a session's timeline as a Perfetto trace (open in ui.perfetto.dev)
+tinker session export-trace session-abc123
+tinker session export-trace session-abc123 --url-only
 
 # JSON output
 tinker --format json run list

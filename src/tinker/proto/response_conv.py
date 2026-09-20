@@ -67,6 +67,10 @@ def deserialize_sample_response(proto_bytes: bytes) -> SampleResponse:
         sequences.append(
             SampledSequence(
                 stop_reason=stop_reason,
+                # Identity comes from the submission; the client stamps it
+                # before the response reaches callers, making the field's
+                # str contract true.
+                sequence_id=None,  # type: ignore[arg-type]
                 tokens_np=tokens_np,
                 logprobs_np=logprobs_np,
             )
@@ -90,6 +94,7 @@ def deserialize_sample_response(proto_bytes: bytes) -> SampleResponse:
         sequences=sequences,
         prompt_logprobs_np=prompt_logprobs_np,
         topk_prompt_logprobs_np=topk_prompt_logprobs_np,
+        prompt_cache_hit_tokens=proto.prompt_cache_hit_tokens,
     )
 
 
@@ -157,11 +162,13 @@ def deserialize_forward_backward_output(proto_bytes: bytes) -> ForwardBackwardOu
     # Bare class name — maintains compatibility with the JSON response shape.
     class_name = proto.loss_fn_output_type.rsplit(":", 1)[-1]
 
-    # Collect per-datum arrays + per-field metadata across every chunk. Field
-    # names and shape/dtype are invariant across chunks (enforced by the
-    # writer — same ArrayRecord subclass for all datums in one response).
+    # Collect per-datum arrays + metadata across every chunk. Field names are
+    # invariant across chunks (enforced by the writer — same ArrayRecord
+    # subclass for all datums in one response), but trailing shape and dtype
+    # are per-chunk: ragged outputs (e.g. variable-K loss fields) arrive as
+    # multiple internally-rectangular chunks.
     per_field_datum_arrays: dict[str, list[np.ndarray]] = {}
-    per_field_meta: dict[str, tuple[TensorDtype, list[int]]] = {}
+    per_field_datum_meta: dict[str, list[tuple[TensorDtype, list[int]]]] = {}
     for record in proto.loss_fn_outputs:
         for name, bt in record.fields.items():
             tensor_dtype = _PROTO_DTYPE_TO_TENSOR_DTYPE.get(bt.dtype)
@@ -169,7 +176,11 @@ def deserialize_forward_backward_output(proto_bytes: bytes) -> ForwardBackwardOu
                 raise ValueError(f"Unsupported proto DType on field {name}: {bt.dtype}")
             chunk_datums = _decode_batched_tensor_to_per_datum_arrays(bt)
             per_field_datum_arrays.setdefault(name, []).extend(chunk_datums)
-            per_field_meta.setdefault(name, (tensor_dtype, list(bt.trailing_shape)))
+            chunk_meta: tuple[TensorDtype, list[int]] = (
+                tensor_dtype,
+                list(bt.trailing_shape),
+            )
+            per_field_datum_meta.setdefault(name, []).extend([chunk_meta] * len(chunk_datums))
 
     # Prefer ArrayRecord.num_datums (authoritative and survives server-side
     # filters like drop_fwdbwd_logprobs that may strip every field). Fall back
@@ -182,7 +193,7 @@ def deserialize_forward_backward_output(proto_bytes: bytes) -> ForwardBackwardOu
     for i in range(num_datums):
         datum: dict[str, TensorData] = {}
         for name, per_datum in per_field_datum_arrays.items():
-            tensor_dtype, trailing_shape = per_field_meta[name]
+            tensor_dtype, trailing_shape = per_field_datum_meta[name][i]
             arr = per_datum[i]
             # Leading dim = total elements / product(trailing_shape).
             trailing_elems = 1

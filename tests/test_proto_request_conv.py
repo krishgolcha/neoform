@@ -8,6 +8,8 @@ integration) stay hand-crafted.
 
 from __future__ import annotations
 
+import base64
+
 import numpy as np
 import pytest
 from hypothesis import given
@@ -29,7 +31,7 @@ def _make_request(
     *,
     data: list[types.Datum],
     loss_fn: types.LossFnType = "cross_entropy",
-    loss_fn_config: dict[str, float] | None = None,
+    loss_fn_config: dict[str, float | str] | None = None,
     model_id: str = "m-test",
     seq_id: int | None = 7,
 ) -> types.ForwardBackwardRequest:
@@ -102,12 +104,19 @@ def _request(draw: DrawFn) -> types.ForwardBackwardRequest:
     n_datums = draw(st.integers(min_value=1, max_value=3))
     data = [draw(_datum()) for _ in range(n_datums)]
     include_seq_id = draw(st.booleans())
-    include_config = draw(st.booleans())
     loss_fn = draw(_LOSS_FN)
     return _make_request(
         data=data,
         loss_fn=loss_fn,
-        loss_fn_config={"clip_low": 0.8, "clip_high": 1.2} if include_config else None,
+        loss_fn_config=draw(
+            st.sampled_from(
+                [
+                    None,
+                    {"clip_low": 0.8, "clip_high": 1.2},
+                    {"kl_estimator": "k3", "kl_coeff": 0.01},
+                ]
+            )
+        ),
         seq_id=draw(st.integers(min_value=0, max_value=999)) if include_seq_id else None,
     )
 
@@ -132,10 +141,15 @@ def test_request_to_proto_preserves_envelope_and_data(
     assert msg.seq_id == (request.seq_id if request.seq_id is not None else 0)
     fbi = request.forward_backward_input
     assert msg.loss_fn == fbi.loss_fn
-    if fbi.loss_fn_config is None:
-        assert dict(msg.loss_fn_config) == {}
-    else:
-        assert dict(msg.loss_fn_config) == fbi.loss_fn_config
+    # Dual-write for compatibility during the migration: floats mirror into
+    # the legacy map; strings exist only on v2.
+    config = fbi.loss_fn_config or {}
+    assert dict(msg.loss_fn_config) == {k: v for k, v in config.items() if not isinstance(v, str)}
+    decoded_config = {
+        k: (val.text if val.WhichOneof("value") == "text" else val.number)
+        for k, val in msg.loss_fn_config_v2.items()
+    }
+    assert decoded_config == config
     assert len(msg.data) == len(fbi.data)
 
     for orig_datum, datum_msg in zip(fbi.data, msg.data, strict=True):
@@ -214,6 +228,43 @@ def test_sparse_tensor_round_trip() -> None:
     assert np.frombuffer(weights_msg.sparse_csr.col_indices, dtype=np.int64).tolist() == [1, 3]
 
 
+def test_dmel_chunk_json_and_proto_round_trip() -> None:
+    """DMel chunks carry TensorContainer bytes through SDK JSON and proto paths."""
+    # Serialization doesn't look at the contents, so use arbitrary bytes for this test.
+    dmel_bytes = np.arange(8 * 80, dtype=np.uint8).reshape(8, 80).tobytes()
+    chunk = types.DmelChunk(dmel=dmel_bytes)
+
+    # JSON path: bytes serialize to a base64 string and validate back losslessly.
+    dumped = chunk.model_dump(mode="json")
+    assert dumped == {
+        "dmel": base64.b64encode(dmel_bytes).decode("utf-8"),
+        "type": "dmel",
+    }
+    assert types.DmelChunk.model_validate(dumped).dmel == dmel_bytes
+
+    request = _make_request(
+        data=[
+            types.Datum(
+                model_input=types.ModelInput(
+                    chunks=[
+                        types.EncodedTextChunk(tokens=[1, 2]),
+                        chunk,
+                    ]
+                ),
+                loss_fn_inputs={"target_tokens": [3], "weights": [1.0]},
+            )
+        ]
+    )
+
+    # Proto path: encode + serialize/parse preserves the raw bytes in the
+    # Chunk.dmel oneof arm (no base64, alongside an EncodedTextChunk).
+    msg = _roundtrip(forward_backward_request_to_proto(request))
+    assert msg.data[0].model_input[0].WhichOneof("chunk") == "encoded_text"
+    dmel_msg = msg.data[0].model_input[1]
+    assert dmel_msg.WhichOneof("chunk") == "dmel"
+    assert dmel_msg.dmel.dmel == dmel_bytes
+
+
 def test_unsupported_dtype_raises() -> None:
     """Future-proofing: a TensorData dtype outside {float32, int64} raises early."""
     bad_td = types.TensorData(data=[1, 2, 3], dtype="float32", shape=[3])
@@ -233,11 +284,10 @@ def test_unsupported_dtype_raises() -> None:
 
 def _async_tinker_with_proto_config(
     *,
-    proto_write_fwdbwd: bool = True,
     proto_compress_fwdbwd: bool = False,
     http_client=None,
 ):
-    """Build an AsyncTinker pinned to the proto path for fwd/bwd."""
+    """Build an AsyncTinker with an explicit fwd/bwd client config."""
     from tinker._client import AsyncTinker
     from tinker.types.client_config_response import ClientConfigResponse
 
@@ -246,7 +296,6 @@ def _async_tinker_with_proto_config(
         api_key="tml-test-api-key",
         http_client=http_client,
         _client_config=ClientConfigResponse(
-            proto_write_fwdbwd=proto_write_fwdbwd,
             proto_compress_fwdbwd=proto_compress_fwdbwd,
         ),
     )
@@ -254,8 +303,8 @@ def _async_tinker_with_proto_config(
 
 @pytest.mark.asyncio
 async def test_forward_backward_proto_path_uses_protobuf_content_type() -> None:
-    """With proto_write_fwdbwd=True, forward_backward() POSTs raw proto bytes
-    with Content-Type: application/x-protobuf."""
+    """forward_backward() POSTs raw proto bytes with
+    Content-Type: application/x-protobuf."""
     from unittest.mock import AsyncMock
 
     request = _make_request(

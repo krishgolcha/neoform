@@ -14,7 +14,8 @@ The ServiceClient is the main entry point for the Tinker API. It provides method
 
 Args:
     user_metadata: Optional metadata attached to the created session.
-    project_id: Optional project ID to attach to the created session.
+    project_id: Optional project ID to attach to the created session. If not
+        provided, falls back to the `TINKER_PROJECT_ID` environment variable.
     **kwargs: advanced options passed to the underlying HTTP client,
              including API keys, headers, and connection settings.
 
@@ -32,6 +33,15 @@ sampling_client = client.create_sampling_client(base_model="Qwen/Qwen3-8B")
 # Near-instant
 rest_client = client.create_rest_client()
 ```
+
+#### `holder`
+
+```python
+def holder() -> InternalClientHolder
+```
+
+The sessionful holder. Deprecated: kept for backwards compatibility
+with callers that reach into ServiceClient internals.
 
 #### `get_server_capabilities`
 
@@ -113,12 +123,47 @@ async def create_lora_training_client_async(
 
 Async version of create_lora_training_client.
 
+#### `copy_weights`
+
+```python
+def copy_weights(
+        path: str,
+        *,
+        ttl_seconds: int | None = None,
+        weights_access_token: str | None = None
+) -> AwaitableConcurrentFuture[str]
+```
+
+Copy weights into this client's project.
+
+Storage is shared with the source, so no bytes are duplicated. Either kind
+of weights can be copied, and the copy keeps that kind. A new training
+run is created to hold it, which cannot be trained on.
+
+Args:
+- `path`: Tinker path of the weights to copy
+- `ttl_seconds`: Seconds until the copy expires, or None for no expiry
+- `weights_access_token`: Optional access token for copying weights readable
+  under a different account
+
+Returns:
+- A future for the tinker path of the copy. Await it, or call `.result()`.
+
+Example:
+```python
+# The copy lands in this client's project.
+archive = tinker.ServiceClient(project_id="proj-archive")
+archived_path = archive.copy_weights("tinker://run-id/weights/step-400").result()
+```
+
 #### `create_training_client_from_state`
 
 ```python
 def create_training_client_from_state(
         path: str,
-        user_metadata: dict[str, str] | None = None) -> TrainingClient
+        base_model: str | None = None,
+        user_metadata: dict[str, str] | None = None,
+        weights_access_token: str | None = None) -> TrainingClient
 ```
 
 Create a TrainingClient from saved model weights.
@@ -128,7 +173,10 @@ optimizer state (e.g., Adam momentum), use create_training_client_from_state_wit
 
 Args:
 - `path`: Tinker path to saved weights (e.g., "tinker://run-id/weights/checkpoint-001")
+- `base_model`: Optional override of the checkpoint's base model; must be
+  compatible with it (e.g. a different context length)
 - `user_metadata`: Optional metadata to attach to the new training run
+- `weights_access_token`: Optional access token for loading checkpoints under a different account.
 
 Returns:
 - `TrainingClient` loaded with the specified weights
@@ -147,7 +195,9 @@ training_client = service_client.create_training_client_from_state(
 ```python
 async def create_training_client_from_state_async(
         path: str,
-        user_metadata: dict[str, str] | None = None) -> TrainingClient
+        base_model: str | None = None,
+        user_metadata: dict[str, str] | None = None,
+        weights_access_token: str | None = None) -> TrainingClient
 ```
 
 Async version of create_training_client_from_state.
@@ -157,7 +207,9 @@ Async version of create_training_client_from_state.
 ```python
 def create_training_client_from_state_with_optimizer(
         path: str,
-        user_metadata: dict[str, str] | None = None) -> TrainingClient
+        base_model: str | None = None,
+        user_metadata: dict[str, str] | None = None,
+        weights_access_token: str | None = None) -> TrainingClient
 ```
 
 Create a TrainingClient from saved model weights and optimizer state.
@@ -168,7 +220,10 @@ training exactly where it left off.
 
 Args:
 - `path`: Tinker path to saved weights (e.g., "tinker://run-id/weights/checkpoint-001")
+- `base_model`: Optional override of the checkpoint's base model; must be
+  compatible with it (e.g. a different context length)
 - `user_metadata`: Optional metadata to attach to the new training run
+- `weights_access_token`: Optional access token for loading checkpoints under a different account.
 
 Returns:
 - `TrainingClient` loaded with the specified weights and optimizer state
@@ -187,7 +242,9 @@ training_client = service_client.create_training_client_from_state_with_optimize
 ```python
 async def create_training_client_from_state_with_optimizer_async(
         path: str,
-        user_metadata: dict[str, str] | None = None) -> TrainingClient
+        base_model: str | None = None,
+        user_metadata: dict[str, str] | None = None,
+        weights_access_token: str | None = None) -> TrainingClient
 ```
 
 Async version of create_training_client_from_state_with_optimizer.
@@ -198,7 +255,8 @@ Async version of create_training_client_from_state_with_optimizer.
 def create_sampling_client(
         model_path: str | None = None,
         base_model: str | None = None,
-        retry_config: RetryConfig | None = None) -> SamplingClient
+        retry_config: RetryConfig | None = None,
+        record_stability_info: bool = False) -> SamplingClient
 ```
 
 Create a SamplingClient for text generation.
@@ -233,7 +291,8 @@ sampling_client = service_client.create_sampling_client(
 async def create_sampling_client_async(
         model_path: str | None = None,
         base_model: str | None = None,
-        retry_config: RetryConfig | None = None) -> SamplingClient
+        retry_config: RetryConfig | None = None,
+        record_stability_info: bool = False) -> SamplingClient
 ```
 
 Async version of create_sampling_client.

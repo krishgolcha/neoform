@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from concurrent.futures import Future as ConcurrentFuture
-from datetime import date
+from datetime import date, datetime
 from typing import TYPE_CHECKING, Literal
 
 from tinker import types
+from tinker._models import BaseModel
 from tinker._types import NoneType
+from tinker.lib._jwt_auth import jwt_claims
 from tinker.lib.client_connection_pool_type import ClientConnectionPoolType
 from tinker.lib.public_interfaces.api_future import APIFuture, AwaitableConcurrentFuture
 from tinker.lib.telemetry import Telemetry, capture_exceptions
@@ -23,6 +25,29 @@ if TYPE_CHECKING:
 # pyright: reportPrivateImportUsage=false
 
 logger = logging.getLogger(__name__)
+
+# How often to poll the server while a session trace export is being built.
+_TRACE_EXPORT_POLL_INTERVAL_SECONDS = 5.0
+
+
+class _SessionTraceExportPollResponse(BaseModel):
+    """Wire format of the trace_export poll endpoint; not part of the public API."""
+
+    status: Literal["pending", "ready", "failed"]
+    url: str | None = None
+    error: str | None = None
+
+
+def _whoami_response_from_jwt(jwt: str) -> types.WhoamiResponse:
+    """Build a WhoamiResponse from the claims of an auth-exchange JWT.
+
+    Non-user-backed principals get an empty email claim; report None.
+    """
+    claims = jwt_claims(jwt)
+    return types.WhoamiResponse(
+        user_urn=claims["sub"],
+        email=claims.get("email") or None,
+    )
 
 
 class RestClient(TelemetryProvider):
@@ -42,6 +67,8 @@ class RestClient(TelemetryProvider):
     - unpublish_checkpoint_from_tinker_path() - unpublish a checkpoint to make it private
     - set_checkpoint_ttl_from_tinker_path() - set or remove TTL on a checkpoint
     - assign_session_project() - move a session into a project
+    - whoami() - get the calling principal's user URN and email
+    - export_session_trace() - export a session's timeline as a Perfetto trace and get a signed download URL
 
     Args:
     - `holder`: Internal client managing HTTP connections and async operations
@@ -191,6 +218,7 @@ class RestClient(TelemetryProvider):
         limit: int = 20,
         offset: int = 0,
         access_scope: Literal["owned", "accessible"] = "owned",
+        project_id: str | None = None,
     ) -> AwaitableConcurrentFuture[types.TrainingRunsResponse]:
         """Internal method to submit list training runs request."""
 
@@ -202,6 +230,8 @@ class RestClient(TelemetryProvider):
                         "offset": offset,
                         "access_scope": access_scope,
                     }
+                    if project_id is not None:
+                        params["project_id"] = project_id
 
                     return await client.get(
                         "/api/v1/training_runs",
@@ -220,12 +250,14 @@ class RestClient(TelemetryProvider):
         limit: int = 20,
         offset: int = 0,
         access_scope: Literal["owned", "accessible"] = "owned",
+        project_id: str | None = None,
     ) -> ConcurrentFuture[types.TrainingRunsResponse]:
         """List training runs with pagination support.
 
         Args:
         - `limit`: Maximum number of training runs to return (default 20)
         - `offset`: Offset for pagination (default 0)
+        - `project_id`: If provided, only return training runs in this project
 
         Returns:
         - A `Future` containing the `TrainingRunsResponse` with training runs and cursor info
@@ -238,12 +270,15 @@ class RestClient(TelemetryProvider):
         print(f"Total: {response.cursor.total_count}")
         # Get next page
         next_page = rest_client.list_training_runs(limit=50, offset=50)
+        # Only runs in a given project
+        project_runs = rest_client.list_training_runs(project_id="my-project-id").result()
         ```
         """
         return self._list_training_runs_submit(
             limit,
             offset,
             access_scope=access_scope,
+            project_id=project_id,
         ).future()
 
     @capture_exceptions(fatal=True)
@@ -252,12 +287,14 @@ class RestClient(TelemetryProvider):
         limit: int = 20,
         offset: int = 0,
         access_scope: Literal["owned", "accessible"] = "owned",
+        project_id: str | None = None,
     ) -> types.TrainingRunsResponse:
         """Async version of list_training_runs."""
         return await self._list_training_runs_submit(
             limit,
             offset,
             access_scope=access_scope,
+            project_id=project_id,
         )
 
     def _list_checkpoints_submit(
@@ -325,7 +362,7 @@ class RestClient(TelemetryProvider):
 
         async def _get_checkpoint_archive_url_async() -> types.CheckpointArchiveUrlResponse:
             async def _send_request() -> types.CheckpointArchiveUrlResponse:
-                with self.holder.aclient(ClientConnectionPoolType.CHECKPOINT_ARCHIVE_URL) as client:
+                with self.holder.aclient(ClientConnectionPoolType.REST_SUPPORT_REDIRECT) as client:
                     return await client.weights.get_checkpoint_archive_url(
                         model_id=training_run_id,
                         checkpoint_id=checkpoint_id,
@@ -430,7 +467,7 @@ class RestClient(TelemetryProvider):
     @capture_exceptions(fatal=True)
     def get_audit_log(
         self,
-        event_type: Literal["all", "checkpoints"] = "all",
+        event_type: Literal["all", "checkpoints", "projects", "teams", "organizations"] = "all",
         day: date | None = None,
     ) -> ConcurrentFuture[types.AuditLogResponse]:
         """Get an audit log of events for the caller's organization.
@@ -438,8 +475,8 @@ class RestClient(TelemetryProvider):
         Requires the tinker-admin RBAC role (VIEW_AUDIT_LOG capability).
 
         Args:
-        - `event_type`: Type of events to include. "all" and "checkpoints"
-            are currently equivalent. Defaults to "all".
+        - `event_type`: Which resource's events to include: "checkpoints",
+            "projects", "teams", "organizations", or "all". Defaults to "all".
         - `day`: The date to query (default: today). The window covers
             midnight to midnight UTC.
 
@@ -454,7 +491,7 @@ class RestClient(TelemetryProvider):
         response = future.result()
         print(f"Found {len(response.entries)} audit entries")
         for entry in response.entries:
-            print(f"  {entry.timestamp}: {entry.event} ({entry.tinker_path})")
+            print(f"  {entry.timestamp}: {entry.event} {entry.event_details}")
 
         # Query a specific day
         future = rest_client.get_audit_log(day=date(2025, 1, 15))
@@ -467,7 +504,7 @@ class RestClient(TelemetryProvider):
     @capture_exceptions(fatal=True)
     async def get_audit_log_async(
         self,
-        event_type: Literal["all", "checkpoints"] = "all",
+        event_type: Literal["all", "checkpoints", "projects", "teams", "organizations"] = "all",
         day: date | None = None,
     ) -> types.AuditLogResponse:
         """Async version of get_audit_log."""
@@ -476,7 +513,7 @@ class RestClient(TelemetryProvider):
             params: dict[str, object] = {"event_type": event_type}
             if day is not None:
                 params["day"] = day.isoformat()
-            with self.holder.aclient(ClientConnectionPoolType.TRAIN) as client:
+            with self.holder.aclient(ClientConnectionPoolType.REST_SUPPORT_REDIRECT) as client:
                 return await client.get(
                     "/api/v1/audit",
                     options={"params": params},
@@ -927,6 +964,119 @@ class RestClient(TelemetryProvider):
         """Async version of assign_session_project."""
         await self._assign_session_project_submit(session_id, project_id)
 
+    def _export_session_trace_submit(self, session_id: str) -> AwaitableConcurrentFuture[str]:
+        """Internal method to poll the trace export job until it completes."""
+
+        async def _export_session_trace_async() -> str:
+            async def _send_request() -> _SessionTraceExportPollResponse:
+                with self.holder.aclient(ClientConnectionPoolType.TRAIN) as client:
+                    return await client.get(
+                        f"/api/v1/sessions/{session_id}/trace_export",
+                        cast_to=_SessionTraceExportPollResponse,
+                    )
+
+            first_poll = True
+            while True:
+                response = await self.holder.execute_with_retries(_send_request)
+                if response.status == "ready":
+                    assert response.url is not None  # guaranteed by the server when ready
+                    return response.url
+                if response.status == "failed":
+                    raise RuntimeError(
+                        f"Trace export failed for session {session_id}: {response.error}"
+                    )
+                if first_poll:
+                    logger.warning(
+                        f"Building trace export for session: {session_id} (this may take a while)"
+                    )
+                    first_poll = False
+                await asyncio.sleep(_TRACE_EXPORT_POLL_INTERVAL_SECONDS)
+
+        return self.holder.run_coroutine_threadsafe(_export_session_trace_async())
+
+    @sync_only
+    @capture_exceptions(fatal=True)
+    def export_session_trace(self, session_id: str) -> ConcurrentFuture[str]:
+        """Export a session's timeline as a Perfetto trace and get a signed download URL.
+
+        Kicks off (or reuses) an async export job on the server that builds a
+        Perfetto trace (`.pftrace`) of the session's training and sampling
+        requests, polls until the file is uploaded, and returns a signed
+        download URL. The URL expires after about an hour; call this method
+        again to get a fresh one (the trace is not rebuilt if it is already up
+        to date).
+
+        To download the trace, issue a plain HTTPS GET to the URL (no auth
+        headers needed):
+        ```python
+        import urllib.request
+
+        url = rest_client.export_session_trace("session-id").result()
+        urllib.request.urlretrieve(url, "session-id.pftrace")
+        ```
+        or from a shell: `curl -o session.pftrace '<url>'` (quote the URL, it
+        contains query parameters). Open the file in https://ui.perfetto.dev to
+        view the timeline, or use `tinker session export-trace <session-id>`
+        to do all of this from the CLI.
+
+        Args:
+        - `session_id`: The session ID to export a trace for
+
+        Returns:
+        - A `Future` containing the signed download URL for the `.pftrace` file
+
+        Raises:
+            RuntimeError: if the export job fails
+
+        Example:
+        ```python
+        url = rest_client.export_session_trace("session-id").result()
+        print(f"Download URL: {url}")
+        ```
+        """
+        return self._export_session_trace_submit(session_id).future()
+
+    @capture_exceptions(fatal=True)
+    async def export_session_trace_async(self, session_id: str) -> str:
+        """Async version of export_session_trace."""
+        return await self._export_session_trace_submit(session_id)
+
+    @capture_exceptions(fatal=True)
+    def whoami(self) -> APIFuture[types.WhoamiResponse]:
+        """Get the calling principal's identity.
+
+        Returns the user URN associated with the credential in use,
+        and the user's email when the principal is user-backed.
+
+        The identity is read from the claims of the JWT the SDK already
+        holds from auth (cached and refreshed in the background), so this
+        makes no server requests.
+
+        Returns:
+        - An `APIFuture` containing the `WhoamiResponse`. The future is awaitable.
+
+        Example:
+        ```python
+        # Sync usage
+        response = rest_client.whoami().result()
+        print(f"URN: {response.user_urn}, email: {response.email}")
+
+        # Async usage
+        response = await rest_client.whoami()
+        ```
+        """
+
+        async def _whoami_async() -> types.WhoamiResponse:
+            jwt = await self.holder.get_identity_jwt()
+            if jwt is None:
+                raise RuntimeError(
+                    "whoami requires JWT auth, but the server has it disabled "
+                    "and the credential is a plain API key."
+                )
+            return _whoami_response_from_jwt(jwt)
+
+        return self.holder.run_coroutine_threadsafe(_whoami_async())
+
     @capture_exceptions(fatal=True)
     def get_sampler(self, sampler_id: str) -> APIFuture[types.GetSamplerResponse]:
         """Get sampler information.
@@ -967,3 +1117,87 @@ class RestClient(TelemetryProvider):
     async def get_sampler_async(self, sampler_id: str) -> types.GetSamplerResponse:
         """Async version of get_sampler."""
         return await self.get_sampler(sampler_id)
+
+    def _get_billing_usage_submit(
+        self,
+        starting_on: datetime | str,
+        ending_before: datetime | str,
+    ) -> AwaitableConcurrentFuture[types.BillingUsageResponse]:
+        """Internal method to submit the billing usage request."""
+        # Typed request model: bad arguments fail here with a clear
+        # validation error, and datetimes serialize to RFC 3339 via pydantic
+        # (RFC 3339 strings are accepted and parsed too).
+        request = types.GetBillingUsageRequest.model_validate(
+            {
+                "starting_on": starting_on,
+                "ending_before": ending_before,
+            }
+        )
+
+        async def _get_billing_usage_async() -> types.BillingUsageResponse:
+            async def _send_request() -> types.BillingUsageResponse:
+                with self.holder.aclient(ClientConnectionPoolType.TRAIN) as client:
+                    return await client.get(
+                        "/api/v1/billing/usage/events",
+                        options={"params": request.model_dump(mode="json", exclude_none=True)},
+                        cast_to=types.BillingUsageResponse,
+                    )
+
+            return await self.holder.execute_with_retries(_send_request)
+
+        return self.holder.run_coroutine_threadsafe(_get_billing_usage_async())
+
+    @sync_only
+    @capture_exceptions(fatal=True)
+    def get_billing_usage(
+        self,
+        starting_on: datetime | str,
+        ending_before: datetime | str,
+    ) -> ConcurrentFuture[types.BillingUsageResponse]:
+        """Get detailed billing usage for your organization.
+
+        Returns hourly-bucketed usage as a list of `BillingUsageEvent`
+        envelopes: the shared attribution (bucket, base model, user, session,
+        project) lives on the envelope, and the usage-kind-specific payload
+        is `event_info` — a union discriminated on `.type` (training /
+        sampling_prefill / sampling_sample / checkpoint / storage), each
+        carrying exactly the fields that apply (token_count, gigabyte_hours,
+        count, the prefill cached flag). Session user_metadata comes once
+        per session in `response.sessions`, keyed by session_id. No dollar
+        amounts. Data lags real time by up to a few hours. Requires billing
+        view access in your organization.
+
+        Args:
+        - `starting_on`: Inclusive window start (RFC 3339 string or datetime),
+          aligned to a UTC hour boundary
+        - `ending_before`: Exclusive window end, aligned to a UTC hour
+          boundary; at most 14 days after `starting_on`; must not start in the future
+
+        Returns:
+        - A `Future` containing the `BillingUsageResponse`
+
+        Example:
+        ```python
+        future = rest_client.get_billing_usage(
+            "2026-07-13T00:00:00Z", "2026-07-14T00:00:00Z"
+        )
+        for event in future.result().data:
+            match event.event_info:
+                case types.StorageBillingEvent() as info:
+                    print(event.bucket_start, "storage", info.gigabyte_hours, "GB-h")
+                case types.CheckpointBillingEvent() as info:
+                    print(event.bucket_start, "checkpoints", info.count)
+                case info:
+                    print(event.bucket_start, info.type, event.base_model, info.token_count)
+        ```
+        """
+        return self._get_billing_usage_submit(starting_on, ending_before).future()
+
+    @capture_exceptions(fatal=True)
+    async def get_billing_usage_async(
+        self,
+        starting_on: datetime | str,
+        ending_before: datetime | str,
+    ) -> types.BillingUsageResponse:
+        """Async version of get_billing_usage."""
+        return await self._get_billing_usage_submit(starting_on, ending_before)

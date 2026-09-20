@@ -8,9 +8,11 @@ from .._base_client import make_request_options
 from .._compat import cached_property, model_dump
 from .._resource import AsyncAPIResource
 from .._response import async_to_raw_response_wrapper
-from .._types import NOT_GIVEN, Body, Headers, NotGiven, Query
+from .._types import NOT_GIVEN, Headers, NotGiven
 from ..types.future_retrieve_request import FutureRetrieveRequest
 from ..types.future_retrieve_response import FutureRetrieveResponse
+from ..types.futures_retrieve_request import FuturesRetrieveRequest
+from ..types.futures_retrieve_response import FuturesRetrieveResponse
 
 __all__ = ["AsyncFuturesResource"]
 
@@ -30,13 +32,8 @@ class AsyncFuturesResource(AsyncAPIResource):
         self,
         *,
         request: FutureRetrieveRequest,
-        # Use the following arguments if you need to pass additional parameters to the API that aren't available via kwargs.
-        # The extra values given here take precedence over values defined on the client or passed to this method.
         extra_headers: Headers | None = None,
-        extra_query: Query | None = None,
-        extra_body: Body | None = None,
         timeout: float | httpx.Timeout | None | NotGiven = NOT_GIVEN,
-        idempotency_key: str | None = None,
         max_retries: int | NotGiven = NOT_GIVEN,
     ) -> FutureRetrieveResponse:
         """
@@ -45,26 +42,13 @@ class AsyncFuturesResource(AsyncAPIResource):
         Args:
           request: The future retrieve request containing request_id and optional model_id
 
-          request_id: (Deprecated, use request instead) The ID of the request to retrieve
-
-          model_id: (Deprecated, use request instead) Optional model ID
-
           extra_headers: Send extra headers
 
-          extra_query: Add additional query parameters to the request
-
-          extra_body: Add additional JSON properties to the request
-
           timeout: Override the client-level default timeout for this request, in seconds
-
-          idempotency_key: Specify a custom idempotency key for this request
         """
         options = make_request_options(
             extra_headers=extra_headers,
-            extra_query=extra_query,
-            extra_body=extra_body,
             timeout=timeout,
-            idempotency_key=idempotency_key,
         )
         if max_retries is not NOT_GIVEN:
             options["max_retries"] = cast(int, max_retries)
@@ -78,6 +62,40 @@ class AsyncFuturesResource(AsyncAPIResource):
                 cast_to=cast(
                     Any, FutureRetrieveResponse
                 ),  # Union types cannot be passed in as arguments in the type system
+            ),
+        )
+
+    async def retrieve_multi(
+        self,
+        *,
+        request: FuturesRetrieveRequest,
+        extra_headers: Headers | None = None,
+        timeout: float | httpx.Timeout | None | NotGiven = NOT_GIVEN,
+        max_retries: int | NotGiven = NOT_GIVEN,
+    ) -> FuturesRetrieveResponse:
+        """Poll a sampling session's completion queue for finished/failed requests.
+
+        Args:
+          request: The retrieve-futures request (target session + prev_cursor)
+
+          extra_headers: Send extra headers
+
+          timeout: Override the client-level default timeout for this request, in seconds
+        """
+        options = make_request_options(
+            extra_headers=extra_headers,
+            timeout=timeout,
+        )
+        if max_retries is not NOT_GIVEN:
+            options["max_retries"] = cast(int, max_retries)
+
+        return cast(
+            FuturesRetrieveResponse,
+            await self._post(
+                "/api/v1/retrieve_futures",
+                body=model_dump(request, exclude_unset=False, exclude_none=True, mode="json"),
+                options=options,
+                cast_to=cast(Any, FuturesRetrieveResponse),
             ),
         )
 

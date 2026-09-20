@@ -25,6 +25,7 @@ from tinker.lib.telemetry import (
     Telemetry,
     _is_telemetry_enabled,
     capture_exceptions,
+    get_process_uuid,
     init_telemetry,
 )
 from tinker.lib.telemetry_provider import TelemetryProvider
@@ -180,6 +181,18 @@ class TestTelemetryClass:
         assert batch.session_id == str(self.telemetry._session_id)
         assert batch.events == events
         assert batch.sdk_version is not None
+        assert batch.process_uuid == get_process_uuid()
+
+    def test_process_uuid_shared_across_sessions(self):
+        """Batches from different sessions in one process carry the same process_uuid."""
+        other = Telemetry(self.tinker_provider, session_id="other-session-id")
+        try:
+            batch = self.telemetry._batch([])
+            other_batch = other._batch([])
+        finally:
+            other.stop()
+        assert batch.process_uuid is not None
+        assert batch.process_uuid == other_batch.process_uuid
 
     def test_log_exception_sync(self):
         try:
@@ -406,6 +419,47 @@ class TestTelemetryClass:
                 assert isinstance(exception_event, UnhandledExceptionEvent)
                 end_event = self.telemetry._queue[-1]
                 assert isinstance(end_event, SessionEndEvent)
+
+
+class TestSessionlessTelemetry:
+    def setup_method(self):
+        self.tinker_provider = MockAsyncTinkerProvider()
+        self.telemetry = Telemetry(self.tinker_provider, session_id=None)
+
+    def teardown_method(self):
+        self.telemetry.stop()
+
+    def test_synthetic_session_id_and_no_session_start(self):
+        assert self.telemetry._session_id.startswith("sessionless-")
+        assert len(self.telemetry._queue) == 0
+
+    def test_log_fatal_exception_sync_no_session_end(self):
+        try:
+            raise RuntimeError("Fatal error")
+        except RuntimeError as e:
+            with patch.object(self.telemetry, "_trigger_flush"):
+                with patch.object(self.telemetry, "_wait_until_drained_sync", return_value=True):
+                    result = self.telemetry.log_fatal_exception_sync(e, "CRITICAL")
+
+        assert result is True
+        assert len(self.telemetry._queue) == 1
+        exception_event = self.telemetry._queue[-1]
+        assert isinstance(exception_event, UnhandledExceptionEvent)
+
+    @pytest.mark.asyncio
+    async def test_log_fatal_exception_async_no_session_end(self):
+        try:
+            raise RuntimeError("Fatal error")
+        except RuntimeError as e:
+            with patch.object(self.telemetry, "_trigger_flush"):
+                with patch.object(
+                    self.telemetry, "_wait_until_drained", new_callable=AsyncMock, return_value=True
+                ):
+                    result = await self.telemetry.log_fatal_exception(e, "CRITICAL")
+
+        assert result is True
+        assert len(self.telemetry._queue) == 1
+        assert isinstance(self.telemetry._queue[-1], UnhandledExceptionEvent)
 
 
 class TestTelemetryEnvironment:

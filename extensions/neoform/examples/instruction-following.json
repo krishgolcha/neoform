@@ -1,0 +1,32 @@
+{
+  "name": "Instruction following",
+  "base_model": "Qwen/Qwen3.5-4B",
+  "seed": 2026,
+  "max_usd": 12,
+  "checkpoint_ttl_days": 7,
+  "search": {
+    "population": 4,
+    "generations": 2,
+    "survivors": 2,
+    "rank": 16,
+    "steps_per_candidate": 20,
+    "batch_size": 4,
+    "max_sequence_tokens": 768,
+    "max_concurrency": 2
+  },
+  "mutations": {
+    "learning_rate_min": 0.00002,
+    "learning_rate_max": 0.0002,
+    "temperatures": [0.0, 0.4, 0.7],
+    "max_tokens": [64, 128],
+    "top_p": [0.9, 1.0],
+    "loss_functions": ["cross_entropy"],
+    "optimizer_modes": ["resume", "reset"],
+    "parent_selection": "softmax",
+    "softmax_temperature": 0.2,
+    "mutation_rate": 0.4
+  },
+  "benchmarks": [
+    { "name": "instruction_following", "weight": 1.0, "examples": 8 }
+  ]
+}

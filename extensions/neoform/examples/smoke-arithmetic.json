@@ -1,0 +1,30 @@
+{
+  "name": "Arithmetic smoke",
+  "base_model": "Qwen/Qwen3.5-4B",
+  "seed": 2026,
+  "max_usd": 2,
+  "checkpoint_ttl_days": 7,
+  "search": {
+    "population": 2,
+    "generations": 1,
+    "survivors": 1,
+    "rank": 8,
+    "steps_per_candidate": 2,
+    "batch_size": 2,
+    "max_sequence_tokens": 256,
+    "max_concurrency": 1
+  },
+  "mutations": {
+    "learning_rate_min": 0.00002,
+    "learning_rate_max": 0.0002,
+    "temperatures": [0.0, 0.6],
+    "max_tokens": [32, 64],
+    "top_p": [1.0],
+    "loss_functions": ["cross_entropy"],
+    "optimizer_modes": ["reset"],
+    "parent_selection": "rank"
+  },
+  "benchmarks": [
+    { "name": "arithmetic_exact_match", "weight": 1.0, "examples": 4 }
+  ]
+}

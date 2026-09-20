@@ -1,0 +1,28 @@
+services:
+  engine:
+    build:
+      context: .
+      dockerfile: extensions/neoform/Dockerfile
+    environment:
+      TINKER_API_KEY: ${TINKER_API_KEY:?Set TINKER_API_KEY before starting NEOFORM}
+      NEOFORM_DATA_DIR: /data
+      NEOFORM_HOST: 0.0.0.0
+      NEOFORM_PORT: 8787
+      NEOFORM_WEB_ORIGIN: http://localhost:3000
+    ports:
+      - "8787:8787"
+    volumes:
+      - neoform-data:/data
+
+  web:
+    build:
+      context: extensions/neoform/web
+      args:
+        NEXT_PUBLIC_NEOFORM_API: http://localhost:8787
+    depends_on:
+      - engine
+    ports:
+      - "3000:3000"
+
+volumes:
+  neoform-data:

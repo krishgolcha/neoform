@@ -19,16 +19,19 @@ import httpx
 
 from tinker import types
 from tinker._client import AsyncTinker
-from tinker._exceptions import APIConnectionError, APIStatusError
+from tinker._exceptions import APIConnectionError, APIStatusError, TinkerError
+from tinker._types import NoneType
 from tinker._version import __version__ as tinker_sdk_version
 from tinker.lib._auth_token_provider import (
+    MISSING_API_KEY_MESSAGE,
     ApiKeyAuthProvider,
     AuthTokenProvider,
     resolve_auth_provider,
 )
-from tinker.lib._jwt_auth import JwtAuthProvider
+from tinker.lib._jwt_auth import JwtAuthProvider, jwt_claims
 from tinker.lib.async_tinker_provider import AsyncTinkerProvider
 from tinker.lib.client_connection_pool_type import ClientConnectionPoolType
+from tinker.lib.credentials import JsonCredentialStore, default_credentials_path
 from tinker.lib.public_interfaces.api_future import AwaitableConcurrentFuture
 from tinker.lib.telemetry import Telemetry, init_telemetry, is_user_error
 from tinker.lib.telemetry_provider import TelemetryProvider
@@ -112,19 +115,6 @@ class InternalClientHolderThreadSingleton:
         assert self._loop is not None, "Loop must not be None"
         self._loop.run_forever()
 
-    def _set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
-        """Inject an external event loop (e.g. the sidecar subprocess loop).
-
-        Must be called before any InternalClientHolder is created.
-        Prevents _ensure_started from spawning a background thread — the
-        caller's loop is used directly.
-        """
-        with self._lifecycle_lock:
-            if self._started:
-                raise RuntimeError("Cannot set_loop after singleton has started")
-            self._loop = loop
-            self._started = True  # prevent _ensure_started from creating a thread
-
     def get_loop(self) -> asyncio.AbstractEventLoop:
         self._ensure_started()
         assert self._loop is not None, "Loop must not be None"
@@ -191,12 +181,19 @@ class InternalClientHolder(AsyncTinkerProvider, TelemetryProvider):
         session_id: str | None = None,
         api_key: str | None = None,
         _client_config: dict[str, str | int | bool] | None = None,
+        _client_dynamic_config: dict[str, str | int | bool] | None = None,
         _jwt_auth_seed: str | None = None,
+        _skip_session: bool = False,
         **kwargs: Any,
     ) -> None:
         # Resolve from env now so shadow_kwargs carries the actual credential
         # across pickle boundaries (workers may not have the env var set).
         self._api_key = api_key or os.environ.get("TINKER_API_KEY")
+        if self._api_key is None and not os.environ.get("TINKER_CREDENTIAL_CMD"):
+            # Same reason: workers may not have ~/.tinker/credentials.json.
+            # TINKER_CREDENTIAL_CMD takes precedence over the stored default.
+            record = JsonCredentialStore(default_credentials_path()).get_default_key()
+            self._api_key = None if record is None else record.key
         self._constructor_kwargs = dict(kwargs)
         self._loop: asyncio.AbstractEventLoop = _internal_client_holder_thread_singleton.get_loop()
         self._client_pools: dict[ClientConnectionPoolType, ClientConnectionPool] = {}
@@ -226,14 +223,24 @@ class InternalClientHolder(AsyncTinkerProvider, TelemetryProvider):
         self._sample_dispatch_bytes_semaphore: BytesSemaphore = BytesSemaphore(
             self._client_config.sample_dispatch_bytes_semaphore_size
         )
+        self._fwdbwd_dispatch_bytes_semaphore: BytesSemaphore = BytesSemaphore(
+            self._client_config.fwdbwd_dispatch_bytes_semaphore_size
+        )
         self._inflight_response_bytes_semaphore: BytesSemaphore = BytesSemaphore(
             self._client_config.inflight_response_bytes_semaphore_size
         )
 
+        self._cancel_queue: asyncio.Queue[str] = asyncio.Queue()
+
         if not self._client_config.pjwt_auth_enabled:
             # Without JWT exchange, only API keys are accepted by the server.
             # Replace any cmd-based provider with a plain API key provider.
-            self._default_auth = ApiKeyAuthProvider(api_key=self._api_key)
+            # _api_key was resolved eagerly above; it is only None when
+            # TINKER_CREDENTIAL_CMD is the sole credential source, which cannot
+            # satisfy an API-key-only server.
+            if self._api_key is None:
+                raise TinkerError(MISSING_API_KEY_MESSAGE)
+            self._default_auth = ApiKeyAuthProvider(self._api_key)
         else:
             # Create a dedicated pool for JWT exchange with the appropriate
             # credential provider.  The lambda captures the pool so it stays alive.
@@ -253,11 +260,35 @@ class InternalClientHolder(AsyncTinkerProvider, TelemetryProvider):
                     self.execute_with_retries(self._default_auth.init)
                 ).result()
 
-        if session_id is not None:
-            # Shadow mode: reuse existing session, can't create new clients
-            self._session_id: str = session_id
+        # Dynamic config follows the same shape as the startup config above —
+        # fetched for primary holders, passed via kwargs for shadows — but
+        # runs after auth setup so the fetch (and the background task started
+        # below that periodically re-fetches it) goes through the standard
+        # session pool.
+        if _client_dynamic_config is not None:
+            self._client_dynamic_config = types.ClientDynamicConfigResponse.model_validate(
+                _client_dynamic_config
+            )
+        else:
+            self._assert_not_on_event_loop("fetch dynamic client config")
+            self._client_dynamic_config = self.run_coroutine_threadsafe(
+                self._fetch_initial_client_dynamic_config()
+            ).result()
+
+        if _skip_session:
+            # Session-less mode: used for raw REST clients (e.g. weights-info
+            # lookups under a different token) that never need a session. We skip
+            # session creation entirely, so a read-only Default project in the
+            # token's org cannot block construction. Auth is already set up above,
+            # which is all a REST read needs.
+            self._session_id: str | None = None
             self._training_client_counter: int | None = None
             self._sampling_client_counter: int | None = None
+        elif session_id is not None:
+            # Shadow mode: reuse existing session, can't create new clients
+            self._session_id = session_id
+            self._training_client_counter = None
+            self._sampling_client_counter = None
         else:
             # Normal mode: create new session.
             self._assert_not_on_event_loop("create a new session")
@@ -267,17 +298,37 @@ class InternalClientHolder(AsyncTinkerProvider, TelemetryProvider):
             self._training_client_counter = 0
             self._sampling_client_counter = 0
 
-        if self._loop.is_running() and _current_loop() is self._loop:
-            # Already on the event loop thread — .result() would deadlock.
-            # Create the heartbeat task directly instead of via run_coroutine_threadsafe.
-            self._session_heartbeat_task: asyncio.Task[None] = asyncio.create_task(
-                self._session_heartbeat(self._session_id)
-            )
+        if _skip_session:
+            self._session_heartbeat_task: asyncio.Task[None] | None = None
+            self._client_dynamic_config_refresh_task: asyncio.Task[None] | None = None
+            self._cancel_drain_task: asyncio.Task[None] | None = None
+            # Session-less telemetry: exception/user-error events are still
+            # reported under a synthetic "sessionless-" id, without
+            # SESSION_START/SESSION_END events.
+            self._telemetry = init_telemetry(self, session_id=None)
         else:
-            self._session_heartbeat_task = self.run_coroutine_threadsafe(
-                self._start_heartbeat()
-            ).result()
-        self._telemetry: Telemetry | None = init_telemetry(self, session_id=self._session_id)
+            assert self._session_id is not None
+            if self._loop.is_running() and _current_loop() is self._loop:
+                # Already on the event loop thread — .result() would deadlock.
+                # Create the tasks directly instead of via run_coroutine_threadsafe.
+                self._session_heartbeat_task = asyncio.create_task(
+                    self._session_heartbeat(self._session_id)
+                )
+                self._client_dynamic_config_refresh_task = asyncio.create_task(
+                    self._client_dynamic_config_refresh_loop()
+                )
+                self._cancel_drain_task = asyncio.create_task(self._cancel_drain_loop())
+            else:
+                self._session_heartbeat_task = self.run_coroutine_threadsafe(
+                    self._start_heartbeat()
+                ).result()
+                self._client_dynamic_config_refresh_task = self.run_coroutine_threadsafe(
+                    self._start_client_dynamic_config_refresh()
+                ).result()
+                self._cancel_drain_task = self.run_coroutine_threadsafe(
+                    self._start_cancel_drain()
+                ).result()
+            self._telemetry = init_telemetry(self, session_id=self._session_id)
 
         self._first_billing_exception_time: float | None = None
         self._last_logged_billing_exception_time: float | None = None
@@ -346,10 +397,29 @@ class InternalClientHolder(AsyncTinkerProvider, TelemetryProvider):
             **self._constructor_kwargs,
             "api_key": self._api_key,
             "_client_config": self._client_config.model_dump(),
+            "_client_dynamic_config": self._client_dynamic_config.model_dump(),
         }
         if isinstance(self._default_auth, JwtAuthProvider):
             result["_jwt_auth_seed"] = self._default_auth._token
         return result
+
+    async def get_identity_jwt(self) -> str | None:
+        """Return a JWT carrying the caller's identity claims, if one is at hand.
+
+        With JWT auth enabled (the default), the SDK already holds a fresh
+        JWT from the auth exchange (refreshed in the background), so this
+        costs no requests. A directly supplied Tinker-issued JWT credential
+        also carries the claims itself. Returns None otherwise.
+        """
+        if isinstance(self._default_auth, JwtAuthProvider):
+            return await self._default_auth.get_token()
+        if self._api_key and self._api_key.startswith("eyJ"):
+            try:
+                if str(jwt_claims(self._api_key).get("iss", "")).startswith("passport-"):
+                    return self._api_key
+            except ValueError:
+                pass
+        return None
 
     @asynccontextmanager
     async def _sample_dispatch_count_rate_limit(self):
@@ -373,6 +443,11 @@ class InternalClientHolder(AsyncTinkerProvider, TelemetryProvider):
             # Rate limit more aggressively if we received backoff response recently
             bytes *= 20
         async with self._sample_dispatch_bytes_semaphore.acquire(bytes):
+            yield
+
+    @asynccontextmanager
+    async def fwdbwd_dispatch_rate_limit(self, estimated_bytes_count: int):
+        async with self._fwdbwd_dispatch_bytes_semaphore.acquire(estimated_bytes_count):
             yield
 
     @asynccontextmanager
@@ -401,9 +476,13 @@ class InternalClientHolder(AsyncTinkerProvider, TelemetryProvider):
                         session_id=session_id, max_retries=0, timeout=10
                     )
                 last_heartbeat_time = time.monotonic()
+            except APIStatusError as e:
+                if e.status_code == 410:
+                    logger.info(f"Session {session_id} has finished; stopping its heartbeat loop.")
+                    return
+                last_exception = f"{type(e).__name__}: {str(e)}"
             except Exception as e:
                 last_exception = f"{type(e).__name__}: {str(e)}"
-                pass
             if (
                 time.monotonic() - last_heartbeat_time
                 > SESSION_MISSED_HEARTBEAT_WARNING_THRESHOLD_SEC
@@ -421,6 +500,7 @@ class InternalClientHolder(AsyncTinkerProvider, TelemetryProvider):
         # _create_sampling_session can only be called via a ServiceClient.
         # ServiceClient will never have a shadow holder, so we can safely assert.
         assert self._sampling_client_counter is not None
+        assert self._session_id is not None
         sampling_session_seq_id = self._sampling_client_counter
         self._sampling_client_counter += 1
         with self.aclient(ClientConnectionPoolType.SESSION) as client:
@@ -435,7 +515,77 @@ class InternalClientHolder(AsyncTinkerProvider, TelemetryProvider):
 
     async def _start_heartbeat(self) -> asyncio.Task[None]:
         """Start the session heartbeat task."""
+        assert self._session_id is not None
         return asyncio.create_task(self._session_heartbeat(self._session_id))
+
+    async def _start_client_dynamic_config_refresh(self) -> asyncio.Task[None]:
+        """Start the dynamic client config refresh task."""
+        return asyncio.create_task(self._client_dynamic_config_refresh_loop())
+
+    async def _start_cancel_drain(self) -> asyncio.Task[None]:
+        """Start the sampling-cancel drain task."""
+        return asyncio.create_task(self._cancel_drain_loop())
+
+    def enqueue_cancel(self, request_id: str) -> None:
+        """Schedule an explicit server-side cancel for an abandoned sampling
+        request. No-op when disabled via dynamic config. Must be called on the
+        event-loop thread — ``put_nowait`` is not cross-thread safe.
+        """
+        if not self._client_dynamic_config.sample_cancel_enabled:
+            return
+        self._cancel_queue.put_nowait(request_id)
+
+    async def _cancel_drain_loop(self) -> None:
+        while True:
+            batch = [await self._cancel_queue.get()]
+            max_batch_size = self._client_dynamic_config.sample_cancel_max_batch_size
+            while len(batch) < max_batch_size and not self._cancel_queue.empty():
+                batch.append(self._cancel_queue.get_nowait())
+            await asyncio.gather(*(self._process_one_cancel(request_id) for request_id in batch))
+
+    async def _process_one_cancel(self, request_id: str) -> None:
+        try:
+            await self.execute_with_retries(self._send_cancel_request, request_id)
+        except Exception as e:
+            # Log rather than re-enqueue: the server's SDK-heartbeat fallback
+            # still stops the work, and re-enqueueing a non-retryable failure
+            # would spin forever.
+            logger.error(f"Failed to cancel sampling request {request_id}: {e}")
+
+    async def _send_cancel_request(self, request_id: str) -> None:
+        with self.aclient(ClientConnectionPoolType.RETRIEVE_PROMISE) as client:
+            # execute_with_retries owns retries, so disable the client's own.
+            await client.post(
+                "/api/v1/cancel_future",
+                body={"request_id": request_id},
+                cast_to=NoneType,
+                options={"max_retries": 0, "timeout": 30},
+            )
+
+    async def _client_dynamic_config_refresh_loop(self) -> None:
+        MIN_REFRESH_INTERVAL_SEC = 10
+        # The constructor fetched the initial values, so sleep first.
+        while True:
+            await asyncio.sleep(
+                max(self._client_dynamic_config.refresh_interval_sec, MIN_REFRESH_INTERVAL_SEC)
+            )
+            await self._refresh_client_dynamic_config_once()
+
+    async def _refresh_client_dynamic_config_once(self) -> None:
+        """Fetch /api/v1/client/dynamic_config and swap in the new flags.
+
+        Keeps the last-known-good values on any failure, so a transient
+        outage (or a server that predates the endpoint) leaves the client
+        on its current configuration.
+        """
+        try:
+            new_config = await self._fetch_client_dynamic_config()
+        except Exception as e:
+            logger.debug(f"Dynamic client config refresh failed: {type(e).__name__}: {e}")
+            return
+        if new_config != self._client_dynamic_config:
+            logger.debug(f"Dynamic client config updated: {new_config.model_dump()}")
+        self._client_dynamic_config = new_config
 
     async def _fetch_client_config(self, auth: AuthTokenProvider) -> types.ClientConfigResponse:
         """Call /api/v1/client/config and return server feature flags.
@@ -459,6 +609,30 @@ class InternalClientHolder(AsyncTinkerProvider, TelemetryProvider):
                 )
 
         return await self.execute_with_retries(_once)
+
+    async def _fetch_client_dynamic_config(self) -> types.ClientDynamicConfigResponse:
+        """Call /api/v1/client/dynamic_config once via the standard session pool."""
+        with self.aclient(ClientConnectionPoolType.SESSION) as client:
+            return await client.service.client_dynamic_config(
+                request=types.ClientConfigRequest(sdk_version=tinker_sdk_version),
+                max_retries=0,
+                timeout=10,
+            )
+
+    async def _fetch_initial_client_dynamic_config(self) -> types.ClientDynamicConfigResponse:
+        """Fetch the initial dynamic flags, with retries.
+
+        Falls back to the SDK defaults when the server predates the endpoint
+        (404); any other persistent failure propagates and fails client
+        construction, like the startup config fetch.
+        """
+        try:
+            return await self.execute_with_retries(self._fetch_client_dynamic_config)
+        except APIStatusError as e:
+            if e.status_code == 404:
+                logger.debug("Server does not support /api/v1/client/dynamic_config")
+                return types.ClientDynamicConfigResponse()
+            raise
 
     async def _create_session(
         self,
@@ -506,9 +680,12 @@ class InternalClientHolder(AsyncTinkerProvider, TelemetryProvider):
                 if client_pool_type == ClientConnectionPoolType.TRAIN
                 else MAX_REQUESTS_PER_HTTPX_CLIENT
             )
+            # Endpoints that respond with a 302 to a signed GCS URL must not use
+            # pyqwest: reqwest follows the redirect internally with the stale
+            # `host` header, and the redirect target resets the stream.
             client_config = (
                 types.ClientConfigResponse(use_pyqwest_transport=False)
-                if client_pool_type == ClientConnectionPoolType.CHECKPOINT_ARCHIVE_URL
+                if client_pool_type == ClientConnectionPoolType.REST_SUPPORT_REDIRECT
                 else None
             )
             self._client_pools[client_pool_type] = self._create_client_connection_pool(
@@ -519,10 +696,21 @@ class InternalClientHolder(AsyncTinkerProvider, TelemetryProvider):
         return self._client_pools[client_pool_type]
 
     def get_session_id(self) -> str:
+        assert self._session_id is not None, (
+            "session_id is unavailable on a session-less client (REST-only)"
+        )
         return self._session_id
 
     def get_client_config(self) -> types.ClientConfigResponse:
         return self._client_config
+
+    def get_client_dynamic_config(self) -> types.ClientDynamicConfigResponse:
+        """The latest periodically refreshed server flags.
+
+        Read this per request rather than caching the result: the background
+        refresh task replaces the object when the server-side config changes.
+        """
+        return self._client_dynamic_config
 
     def get_training_client_id(self) -> int:
         # get_training_client_id can only be called via a ServiceClient.
@@ -563,6 +751,14 @@ class InternalClientHolder(AsyncTinkerProvider, TelemetryProvider):
             self._session_heartbeat_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._session_heartbeat_task
+        if self._client_dynamic_config_refresh_task:
+            self._client_dynamic_config_refresh_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._client_dynamic_config_refresh_task
+        if self._cancel_drain_task:
+            self._cancel_drain_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._cancel_drain_task
 
     @staticmethod
     def _is_retryable_status_code(status_code: int) -> bool:
@@ -636,6 +832,8 @@ class InternalClientHolder(AsyncTinkerProvider, TelemetryProvider):
                 raise e
 
     def estimate_bytes_count_in_chunk(self, chunk: types.ModelInputChunk) -> int:
+        if isinstance(chunk, types.DmelChunk):
+            return len(chunk.dmel)
         if isinstance(chunk, types.ImageChunk):
             return len(chunk.data)
         if isinstance(chunk, types.ImageAssetPointerChunk):

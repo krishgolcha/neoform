@@ -3,6 +3,36 @@ from __future__ import annotations
 from .audit_log_entry import AuditLogEntry as AuditLogEntry
 from .audit_log_response import AuditLogResponse as AuditLogResponse
 from .auth_token_response import AuthTokenResponse as AuthTokenResponse
+from .billing_usage_request import (
+    GetBillingUsageRequest as GetBillingUsageRequest,
+)
+from .billing_usage_response import (
+    BillingEventInfo as BillingEventInfo,
+)
+from .billing_usage_response import (
+    BillingUsageEvent as BillingUsageEvent,
+)
+from .billing_usage_response import (
+    BillingUsageResponse as BillingUsageResponse,
+)
+from .billing_usage_response import (
+    BillingUsageSession as BillingUsageSession,
+)
+from .billing_usage_response import (
+    CheckpointBillingEvent as CheckpointBillingEvent,
+)
+from .billing_usage_response import (
+    SamplingPrefillBillingEvent as SamplingPrefillBillingEvent,
+)
+from .billing_usage_response import (
+    SamplingSampleBillingEvent as SamplingSampleBillingEvent,
+)
+from .billing_usage_response import (
+    StorageBillingEvent as StorageBillingEvent,
+)
+from .billing_usage_response import (
+    TrainingBillingEvent as TrainingBillingEvent,
+)
 from .checkpoint import (
     Checkpoint as Checkpoint,
 )
@@ -18,6 +48,11 @@ from .checkpoint_archive_url_response import (
 from .checkpoints_list_response import CheckpointsListResponse as CheckpointsListResponse
 from .client_config_request import ClientConfigRequest as ClientConfigRequest
 from .client_config_response import ClientConfigResponse as ClientConfigResponse
+from .client_dynamic_config_response import (
+    ClientDynamicConfigResponse as ClientDynamicConfigResponse,
+)
+from .copy_weights_request import CopyWeightsRequest as CopyWeightsRequest
+from .copy_weights_response import CopyWeightsResponse as CopyWeightsResponse
 from .create_model_request import CreateModelRequest as CreateModelRequest
 from .create_model_response import CreateModelResponse as CreateModelResponse
 from .create_sampling_session_request import (
@@ -30,14 +65,21 @@ from .create_session_request import CreateSessionRequest as CreateSessionRequest
 from .create_session_response import CreateSessionResponse as CreateSessionResponse
 from .cursor import Cursor as Cursor
 from .datum import Datum as Datum
+from .dmel_chunk import DmelChunk as DmelChunk
 from .encoded_text_chunk import EncodedTextChunk as EncodedTextChunk
 from .event_type import EventType as EventType
 from .forward_backward_input import ForwardBackwardInput as ForwardBackwardInput
 from .forward_backward_output import ForwardBackwardOutput as ForwardBackwardOutput
 from .forward_backward_request import ForwardBackwardRequest as ForwardBackwardRequest
 from .forward_request import ForwardRequest as ForwardRequest
+from .future_completion import FutureCompletion as FutureCompletion
+from .future_completion import FutureFailed as FutureFailed
+from .future_completion import FutureFinished as FutureFinished
 from .future_retrieve_request import FutureRetrieveRequest as FutureRetrieveRequest
 from .future_retrieve_response import FutureRetrieveResponse as FutureRetrieveResponse
+from .futures_retrieve_request import FuturesRetrieveRequest as FuturesRetrieveRequest
+from .futures_retrieve_request import SamplingSessionFuturesTarget as SamplingSessionFuturesTarget
+from .futures_retrieve_response import FuturesRetrieveResponse as FuturesRetrieveResponse
 from .get_info_request import GetInfoRequest as GetInfoRequest
 from .get_info_response import GetInfoResponse as GetInfoResponse
 from .get_info_response import ModelData as ModelData
@@ -63,6 +105,8 @@ from .model_input_chunk import ModelInputChunk as ModelInputChunk
 from .optim_step_request import AdamParams as AdamParams
 from .optim_step_request import OptimStepRequest as OptimStepRequest
 from .optim_step_response import OptimStepResponse as OptimStepResponse
+from .provenance_spans import PromptProvenanceSpan as PromptProvenanceSpan
+from .provenance_spans import SampledProvenanceSpan as SampledProvenanceSpan
 from .request_error_category import RequestErrorCategory as RequestErrorCategory
 from .request_failed_response import RequestFailedResponse as RequestFailedResponse
 from .request_id import RequestID as RequestID
@@ -100,3 +144,4 @@ from .unhandled_exception_event import UnhandledExceptionEvent as UnhandledExcep
 from .unload_model_request import UnloadModelRequest as UnloadModelRequest
 from .unload_model_response import UnloadModelResponse as UnloadModelResponse
 from .weights_info_response import WeightsInfoResponse as WeightsInfoResponse
+from .whoami_response import WhoamiResponse as WhoamiResponse

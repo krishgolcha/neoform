@@ -17,6 +17,7 @@ from tinker.lib.client_connection_pool_type import ClientConnectionPoolType
 from tinker.lib.public_interfaces.api_future import APIFuture
 from tinker.lib.telemetry import Telemetry
 from tinker.types import RequestErrorCategory
+from tinker.types.future_completion import FutureFinished
 from tinker.types.future_retrieve_request import FutureRetrieveRequest
 
 from ._pydantic_conv import deserialize_json_response
@@ -25,6 +26,7 @@ from .sync_only import sync_only
 
 if TYPE_CHECKING:
     from tinker.lib.internal_client_holder import InternalClientHolder
+    from tinker.lib.session_futures_poller import SessionFuturesPoller
 
 from tinker.proto.response_conv import PROTO_SUPPORTED_TYPES, deserialize_proto_response
 
@@ -211,12 +213,16 @@ class _APIFuture(APIFuture[T]):  # pyright: ignore[reportUnusedClass]
         request_start_time: float,
         request_type: str,
         queue_state_observer: QueueStateObserver | None = None,
+        futures_poller: SessionFuturesPoller | None = None,
     ):
         self.model_cls = model_cls
         self.holder = holder
         self.untyped_future = untyped_future
         self.request_type = request_type
         self._cached_result: Any = _UNCOMPUTED
+        # When set, wait for the session poller to signal completion instead of
+        # polling retrieve_future ourselves.
+        self._futures_poller = futures_poller
 
         # This helps us collect telemetry about how long (1) it takes the
         # client to serialize the request, (2) round-trip time to the server
@@ -238,21 +244,50 @@ class _APIFuture(APIFuture[T]):  # pyright: ignore[reportUnusedClass]
         iteration = -1
         state = _LoopState()
 
-        async with contextlib.AsyncExitStack() as stack:
-            while True:
-                iteration += 1
-                self._check_timeout(timeout, iteration, start_time)
+        try:
+            async with contextlib.AsyncExitStack() as stack:
+                # Block on the session poller, then inject its payload size as a
+                # metadata-only outcome so the fetch below gets the payload in one
+                # round-trip.
+                if self._futures_poller is not None:
+                    completion = await self._futures_poller.wait_for(self.request_id)
+                    if (
+                        isinstance(completion, FutureFinished)
+                        and completion.response_payload_uncompressed_size
+                    ):
+                        await self._handle_outcome(
+                            _MetadataOnly(
+                                payload_size=completion.response_payload_uncompressed_size
+                            ),
+                            state,
+                            stack,
+                            iteration,
+                            start_time,
+                        )
 
-                fetched = await self._fetch_via_rest(state, iteration)
-                if isinstance(fetched, _TransportError):
-                    await self._handle_transport_error(fetched, state, iteration, start_time)
-                    continue
+                while True:
+                    iteration += 1
+                    self._check_timeout(timeout, iteration, start_time)
 
-                result = await self._handle_outcome(fetched, state, stack, iteration, start_time)
-                if result is None:
-                    # Business-level retry (try_again / metadata-only peek).
-                    continue
-                return result
+                    fetched = await self._fetch_via_rest(state, iteration)
+                    if isinstance(fetched, _TransportError):
+                        await self._handle_transport_error(fetched, state, iteration, start_time)
+                        continue
+
+                    result = await self._handle_outcome(
+                        fetched, state, stack, iteration, start_time
+                    )
+                    if result is None:
+                        # Business-level retry (try_again / metadata-only peek).
+                        continue
+                    return result
+        except asyncio.CancelledError:
+            # Polling was abandoned; tell the server to stop the sampling work
+            # rather than waiting for the SDK-heartbeat to lapse. Only sampling
+            # supports an explicit server-side cancel.
+            if self.request_type == "Sample":
+                self.holder.enqueue_cancel(self.request_id)
+            raise
 
         # Unreachable: the while-True either returns or raises.
         raise AssertionError("unreachable")
@@ -398,7 +433,7 @@ class _APIFuture(APIFuture[T]):  # pyright: ignore[reportUnusedClass]
             "X-Tinker-Request-Type": self.request_type,
         }
         if self.model_cls in PROTO_SUPPORTED_TYPES:
-            headers["Accept"] = "application/x-protobuf, application/json"
+            headers["Accept"] = "application/x-protobuf"
         if iteration == 0:
             headers["X-Tinker-Create-Promise-Roundtrip-Time"] = str(
                 self.request_queue_roundtrip_time
@@ -535,6 +570,12 @@ class _APIFuture(APIFuture[T]):  # pyright: ignore[reportUnusedClass]
                     f"and expected type {self.model_cls=}"
                 ) from e
         # _SuccessJson
+        if self.model_cls in PROTO_SUPPORTED_TYPES:
+            raise ValueError(
+                f"Server returned a JSON payload for {self.model_cls=} ({self.request_id=}), "
+                "which this SDK version only supports as proto. The server predates proto "
+                "response serialization for this type."
+            )
         try:
             self._cached_result = deserialize_json_response(outcome.result_dict, self.model_cls)
             return cast(T, self._cached_result)

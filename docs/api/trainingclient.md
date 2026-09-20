@@ -35,7 +35,7 @@ sampling_client = training_client.save_weights_and_get_sampling_client("my-model
 def forward(
     data: List[types.Datum],
     loss_fn: types.LossFnType,
-    loss_fn_config: Dict[str, float] | None = None
+    loss_fn_config: Mapping[str, float | str] | None = None
 ) -> APIFuture[types.ForwardBackwardOutput]
 ```
 
@@ -66,7 +66,7 @@ print(f"Loss: {result.loss}")
 async def forward_async(
     data: List[types.Datum],
     loss_fn: types.LossFnType,
-    loss_fn_config: Dict[str, float] | None = None
+    loss_fn_config: Mapping[str, float | str] | None = None
 ) -> APIFuture[types.ForwardBackwardOutput]
 ```
 
@@ -78,7 +78,7 @@ Async version of forward.
 def forward_backward(
     data: List[types.Datum],
     loss_fn: types.LossFnType,
-    loss_fn_config: Dict[str, float] | None = None
+    loss_fn_config: Mapping[str, float | str] | None = None
 ) -> APIFuture[types.ForwardBackwardOutput]
 ```
 
@@ -117,7 +117,7 @@ print(f"Loss: {fwdbwd_result.loss}")
 async def forward_backward_async(
     data: List[types.Datum],
     loss_fn: types.LossFnType,
-    loss_fn_config: Dict[str, float] | None = None
+    loss_fn_config: Mapping[str, float | str] | None = None
 ) -> APIFuture[types.ForwardBackwardOutput]
 ```
 
@@ -225,8 +225,10 @@ Async version of optim_step.
 
 ```python
 def save_state(
-        name: str,
-        ttl_seconds: int | None = None
+    name: str,
+    ttl_seconds: int | None = None,
+    overwrite: bool = False,
+    user_metadata: dict[str, str] | None = None
 ) -> APIFuture[types.SaveWeightsResponse]
 ```
 
@@ -235,6 +237,10 @@ Save model weights to persistent storage.
 Args:
 - `name`: Name for the saved checkpoint
 - `ttl_seconds`: Optional TTL in seconds for the checkpoint (None = never expires)
+- `overwrite`: If True, overwrite any existing checkpoint with the same name. This
+  replaces the entire existing `user_metadata` mapping; if `user_metadata` is not
+  provided, the previous user metadata is deleted.
+- `user_metadata`: Optional user-provided metadata to attach to the checkpoint
 
 Returns:
 - `APIFuture` containing the save response with checkpoint path
@@ -251,8 +257,10 @@ print(f"Saved to: {result.path}")
 
 ```python
 async def save_state_async(
-        name: str,
-        ttl_seconds: int | None = None
+    name: str,
+    ttl_seconds: int | None = None,
+    overwrite: bool = False,
+    user_metadata: dict[str, str] | None = None
 ) -> APIFuture[types.SaveWeightsResponse]
 ```
 
@@ -261,7 +269,10 @@ Async version of save_state.
 #### `load_state`
 
 ```python
-def load_state(path: str) -> APIFuture[types.LoadWeightsResponse]
+def load_state(
+    path: str,
+    weights_access_token: str | None = None
+) -> APIFuture[types.LoadWeightsResponse]
 ```
 
 Load model weights from a saved checkpoint.
@@ -271,6 +282,7 @@ To also restore optimizer state, use load_state_with_optimizer.
 
 Args:
 - `path`: Tinker path to saved weights (e.g., "tinker://run-id/weights/checkpoint-001")
+- `weights_access_token`: Optional access token for loading checkpoints under a different account.
 
 Returns:
 - `APIFuture` containing the load response
@@ -286,7 +298,10 @@ await load_future
 #### `load_state_async`
 
 ```python
-async def load_state_async(path: str) -> APIFuture[types.LoadWeightsResponse]
+async def load_state_async(
+    path: str,
+    weights_access_token: str | None = None
+) -> APIFuture[types.LoadWeightsResponse]
 ```
 
 Async version of load_state.
@@ -295,13 +310,16 @@ Async version of load_state.
 
 ```python
 def load_state_with_optimizer(
-        path: str) -> APIFuture[types.LoadWeightsResponse]
+    path: str,
+    weights_access_token: str | None = None
+) -> APIFuture[types.LoadWeightsResponse]
 ```
 
 Load model weights and optimizer state from a checkpoint.
 
 Args:
 - `path`: Tinker path to saved weights (e.g., "tinker://run-id/weights/checkpoint-001")
+- `weights_access_token`: Optional access token for loading checkpoints under a different account.
 
 Returns:
 - `APIFuture` containing the load response
@@ -320,7 +338,9 @@ await load_future
 
 ```python
 async def load_state_with_optimizer_async(
-        path: str) -> APIFuture[types.LoadWeightsResponse]
+    path: str,
+    weights_access_token: str | None = None
+) -> APIFuture[types.LoadWeightsResponse]
 ```
 
 Async version of load_state_with_optimizer.
@@ -330,7 +350,8 @@ Async version of load_state_with_optimizer.
 ```python
 def save_weights_for_sampler(
     name: str,
-    ttl_seconds: int | None = None
+    ttl_seconds: int | None = None,
+    user_metadata: dict[str, str] | None = None
 ) -> APIFuture[types.SaveWeightsForSamplerResponse]
 ```
 
@@ -339,6 +360,7 @@ Save model weights for use with a SamplingClient.
 Args:
 - `name`: Name for the saved sampler weights
 - `ttl_seconds`: Optional TTL in seconds for the checkpoint (None = never expires)
+- `user_metadata`: Optional user-provided metadata to attach to the checkpoint
 
 Returns:
 - `APIFuture` containing the save response with sampler path
@@ -361,7 +383,8 @@ sampling_client = service_client.create_sampling_client(
 ```python
 async def save_weights_for_sampler_async(
     name: str,
-    ttl_seconds: int | None = None
+    ttl_seconds: int | None = None,
+    user_metadata: dict[str, str] | None = None
 ) -> APIFuture[types.SaveWeightsForSamplerResponse]
 ```
 
@@ -417,7 +440,8 @@ text = tokenizer.decode(tokens)
 ```python
 def create_sampling_client(
         model_path: str,
-        retry_config: RetryConfig | None = None) -> SamplingClient
+        retry_config: RetryConfig | None = None,
+        record_stability_info: bool = False) -> SamplingClient
 ```
 
 Create a SamplingClient from saved weights.
@@ -442,7 +466,8 @@ sampling_client = training_client.create_sampling_client(
 ```python
 async def create_sampling_client_async(
         model_path: str,
-        retry_config: RetryConfig | None = None) -> SamplingClient
+        retry_config: RetryConfig | None = None,
+        record_stability_info: bool = False) -> SamplingClient
 ```
 
 Async version of create_sampling_client.
@@ -452,13 +477,14 @@ Async version of create_sampling_client.
 ```python
 def save_weights_and_get_sampling_client(
         name: str | None = None,
-        retry_config: RetryConfig | None = None) -> SamplingClient
+        retry_config: RetryConfig | None = None,
+        record_stability_info: bool = False) -> SamplingClient
 ```
 
 Save current weights and create a SamplingClient for inference.
 
 Args:
-- `name`: Optional name for the saved weights (currently ignored for ephemeral saves)
+- `name`: Deprecated, has no effect. Will be removed in a future release.
 - `retry_config`: Optional configuration for retrying failed requests
 
 Returns:
@@ -480,7 +506,8 @@ result = sampling_client.sample(prompt, 1, params).result()
 ```python
 async def save_weights_and_get_sampling_client_async(
         name: str | None = None,
-        retry_config: RetryConfig | None = None) -> SamplingClient
+        retry_config: RetryConfig | None = None,
+        record_stability_info: bool = False) -> SamplingClient
 ```
 
 Async version of save_weights_and_get_sampling_client.

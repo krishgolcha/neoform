@@ -1,6 +1,6 @@
 import typing as _t
 
-from . import types
+from . import auth, types
 from ._client import RequestOptions, Timeout
 from ._exceptions import (
     APIConnectionError,
@@ -10,16 +10,13 @@ from ._exceptions import (
     APITimeoutError,
     AuthenticationError,
     BadRequestError,
+    BillingError,
     ConflictError,
     InternalServerError,
     NotFoundError,
     PermissionDeniedError,
     RateLimitError,
     RequestFailedError,
-    SidecarDiedError,
-    SidecarError,
-    SidecarIPCError,
-    SidecarStartupError,
     TinkerError,
     UnprocessableEntityError,
 )
@@ -35,6 +32,7 @@ from .types import (
     Checkpoint,
     CheckpointType,
     Datum,
+    DmelChunk,
     EncodedTextChunk,
     ForwardBackwardOutput,
     LoraConfig,
@@ -44,6 +42,8 @@ from .types import (
     OptimStepRequest,
     OptimStepResponse,
     ParsedCheckpointTinkerPath,
+    PromptProvenanceSpan,
+    SampledProvenanceSpan,
     SampledSequence,
     SampleRequest,
     SampleResponse,
@@ -60,13 +60,16 @@ __all__ = [
     "ServiceClient",
     "SamplingClient",
     "APIFuture",
+    "auth",
     # Commonly used types
     "AdamParams",
     "Checkpoint",
     "CheckpointType",
     "Datum",
+    "DmelChunk",
     "EncodedTextChunk",
     "ForwardBackwardOutput",
+    "SampledProvenanceSpan",
     "LoraConfig",
     "ModelID",
     "ModelInput",
@@ -74,6 +77,7 @@ __all__ = [
     "OptimStepRequest",
     "OptimStepResponse",
     "ParsedCheckpointTinkerPath",
+    "PromptProvenanceSpan",
     "SampledSequence",
     "SampleRequest",
     "SampleResponse",
@@ -95,16 +99,13 @@ __all__ = [
     "RequestFailedError",
     "BadRequestError",
     "AuthenticationError",
+    "BillingError",
     "PermissionDeniedError",
     "NotFoundError",
     "ConflictError",
     "UnprocessableEntityError",
     "RateLimitError",
     "InternalServerError",
-    "SidecarError",
-    "SidecarStartupError",
-    "SidecarDiedError",
-    "SidecarIPCError",
     # Keep types module for advanced use
     "types",
     # Version info

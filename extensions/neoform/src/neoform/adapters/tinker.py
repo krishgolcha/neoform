@@ -1,0 +1,170 @@
+from __future__ import annotations
+
+import os
+from typing import Any
+
+import httpx
+
+from neoform.domain import EvaluationResult, EvolutionSpec, Genotype, TrainingResult, Usage
+from neoform.evaluators import EvalItem, run_evaluations, training_pairs_for_spec
+from neoform.mutations import reject_unsupported_loss
+
+from .base import LabAdapter
+
+
+class TinkerAdapter(LabAdapter):
+    def __init__(self, api_key: str | None = None):
+        self.api_key = api_key or os.getenv("TINKER_API_KEY")
+
+    def _require_key(self) -> str:
+        if not self.api_key:
+            raise RuntimeError("TINKER_API_KEY is required for live NEOFORM runs")
+        return self.api_key
+
+    def _service(self, spec: EvolutionSpec | None = None):
+        import tinker
+
+        kwargs: dict[str, Any] = {"api_key": self._require_key()}
+        if spec and spec.project_id:
+            kwargs["project_id"] = spec.project_id
+        return tinker.ServiceClient(**kwargs)
+
+    async def doctor(self) -> dict[str, object]:
+        service = self._service()
+        capabilities = await service.get_server_capabilities_async()
+        return {
+            "connected": True,
+            "provider": "tinker",
+            "capabilities": capabilities.model_dump(mode="json"),
+        }
+
+    async def train(
+        self,
+        candidate_id: str,
+        spec: EvolutionSpec,
+        genotype: Genotype,
+        parent_state: str | None,
+    ) -> TrainingResult:
+        reject_unsupported_loss(genotype.loss_function)
+
+        from tinker import types
+
+        service = self._service(spec)
+        metadata = {"neoform_candidate": candidate_id, "neoform_evolution": spec.name}
+        if parent_state:
+            create = (
+                service.create_training_client_from_state_with_optimizer_async
+                if genotype.optimizer_mode == "resume"
+                else service.create_training_client_from_state_async
+            )
+            training = await create(parent_state, user_metadata=metadata)
+        else:
+            training = await service.create_lora_training_client_async(
+                base_model=spec.base_model,
+                rank=spec.search.rank,
+                seed=genotype.curriculum_seed,
+                user_metadata=metadata,
+            )
+
+        tokenizer = training.get_tokenizer()
+        examples = training_pairs_for_spec(spec)
+        total_tokens = 0
+        losses: list[float] = []
+        for step in range(spec.search.steps_per_candidate):
+            batch = []
+            for offset in range(spec.search.batch_size):
+                example_index = (step + offset + genotype.curriculum_seed) % len(examples)
+                prompt, completion = examples[example_index]
+                prompt_text = f"User: {prompt}\nAssistant:"
+                prompt_tokens = tokenizer.encode(prompt_text, add_special_tokens=True)
+                completion_tokens = tokenizer.encode(f" {completion}", add_special_tokens=False)
+                full = prompt_tokens + completion_tokens
+                total_tokens += len(full)
+                batch.append(
+                    types.Datum(
+                        model_input=types.ModelInput.from_ints(tokens=full[:-1]),
+                        loss_fn_inputs={
+                            "weights": [0.0] * (len(prompt_tokens) - 1)
+                            + [1.0] * len(completion_tokens),
+                            "target_tokens": full[1:],
+                        },
+                    )
+                )
+            future = await training.forward_backward_async(batch, genotype.loss_function)
+            result = await future.result_async()
+            loss = getattr(result, "loss", None)
+            if loss is not None:
+                losses.append(float(loss))
+            optim = await training.optim_step_async(
+                types.AdamParams(learning_rate=genotype.learning_rate)
+            )
+            await optim.result_async()
+
+        ttl = spec.checkpoint_ttl_days * 86_400
+        state_future = await training.save_state_async(
+            f"neoform-{candidate_id}-state", ttl_seconds=ttl, overwrite=True
+        )
+        state = await state_future.result_async()
+        sampler_future = await training.save_weights_for_sampler_async(
+            f"neoform-{candidate_id}-sampler", ttl_seconds=ttl
+        )
+        sampler = await sampler_future.result_async()
+        return TrainingResult(
+            state_checkpoint=state.path,
+            sampler_checkpoint=sampler.path,
+            training_loss=sum(losses) / len(losses) if losses else 0,
+            usage=Usage(train_tokens=total_tokens),
+        )
+
+    async def probe(self, sampler_checkpoint: str) -> bool:
+        service = self._service()
+        sampling = await service.create_sampling_client_async(model_path=sampler_checkpoint)
+        tokenizer = sampling.get_tokenizer()
+        from tinker import types
+
+        result = await sampling.sample_async(
+            prompt=types.ModelInput.from_ints(tokenizer.encode("User: 2+2?\nAssistant:")),
+            num_samples=1,
+            sampling_params=types.SamplingParams(max_tokens=8, temperature=0),
+        )
+        return bool(result.sequences and result.sequences[0].tokens)
+
+    async def evaluate(
+        self, sampler_checkpoint: str, spec: EvolutionSpec, genotype: Genotype
+    ) -> EvaluationResult:
+        from tinker import types
+
+        service = self._service(spec)
+        sampling = await service.create_sampling_client_async(model_path=sampler_checkpoint)
+        tokenizer = sampling.get_tokenizer()
+
+        async def complete(item: EvalItem) -> tuple[str, Usage]:
+            tokens = tokenizer.encode(f"User: {item.prompt}\nAssistant:")
+            result = await sampling.sample_async(
+                prompt=types.ModelInput.from_ints(tokens),
+                num_samples=1,
+                sampling_params=types.SamplingParams(
+                    max_tokens=genotype.max_tokens,
+                    temperature=genotype.temperature,
+                    top_p=genotype.top_p,
+                ),
+            )
+            sequence = result.sequences[0]
+            text = tokenizer.decode(sequence.tokens)
+            return text, Usage(prompt_tokens=len(tokens), sample_tokens=len(sequence.tokens))
+
+        return await run_evaluations(spec, genotype, complete)
+
+    async def chat(
+        self, sampler_checkpoint: str, messages: list[dict[str, str]], **parameters: object
+    ) -> dict[str, object]:
+        base_url = "https://tinker.thinkingmachines.dev/services/tinker-prod/oai/api/v1"
+        payload = {"model": sampler_checkpoint, "messages": messages, **parameters}
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.post(
+                f"{base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {self._require_key()}"},
+                json=payload,
+            )
+            response.raise_for_status()
+            return response.json()

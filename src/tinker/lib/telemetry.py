@@ -45,11 +45,33 @@ FLUSH_TIMEOUT: float = 30.0
 MAX_QUEUE_SIZE: int = 10000
 HTTP_TIMEOUT_SECONDS: float = 5.0
 
+_process_uuid: str | None = None
+_process_uuid_pid: int | None = None
+_process_uuid_lock = threading.Lock()
+
+
+def get_process_uuid() -> str:
+    """UUID identifying this process, generated once and reused by every session.
+
+    Keyed on the PID so a forked child gets its own id instead of inheriting
+    the parent's.
+    """
+    global _process_uuid, _process_uuid_pid
+    with _process_uuid_lock:
+        if _process_uuid is None or _process_uuid_pid != os.getpid():
+            _process_uuid = str(uuid4())
+            _process_uuid_pid = os.getpid()
+        return _process_uuid
+
 
 class Telemetry:
-    def __init__(self, tinker_provider: AsyncTinkerProvider, session_id: str):
+    def __init__(self, tinker_provider: AsyncTinkerProvider, session_id: str | None):
+        """session_id=None enables session-less mode (e.g. REST-only clients):
+        batches carry a synthetic "sessionless-<uuid>" id and no
+        SESSION_START/SESSION_END events are emitted."""
         self._tinker_provider: AsyncTinkerProvider = tinker_provider
-        self._session_id: str = session_id
+        self._sessionless: bool = session_id is None
+        self._session_id: str = session_id if session_id is not None else f"sessionless-{uuid4()}"
         self._session_start: datetime = datetime.now(timezone.utc)
         self._session_index: int = 0
         self._session_index_lock: threading.Lock = threading.Lock()
@@ -60,7 +82,8 @@ class Telemetry:
         self._push_counter: int = 0
         self._flush_counter: int = 0
         self._counter_lock: threading.Lock = threading.Lock()
-        _ = self._log(self._session_start_event())
+        if not self._sessionless:
+            _ = self._log(self._session_start_event())
         self._start()
 
     def _start(self):
@@ -165,12 +188,16 @@ class Telemetry:
         self._trigger_flush()
         return logged
 
+    def _fatal_events(self, exception: BaseException, severity: Severity) -> list[TelemetryEvent]:
+        events: list[TelemetryEvent] = [self._exception_or_user_error_event(exception, severity)]
+        if not self._sessionless:
+            events.append(self._session_end_event())
+        return events
+
     async def log_fatal_exception(
         self, exception: BaseException, severity: Severity = "ERROR"
     ) -> bool:
-        logged = self._log(
-            self._exception_or_user_error_event(exception, severity), self._session_end_event()
-        )
+        logged = self._log(*self._fatal_events(exception, severity))
         self._trigger_flush()
         # wait for the flush to complete
         _ = await self._wait_until_drained()
@@ -189,9 +216,7 @@ class Telemetry:
     def log_fatal_exception_sync(
         self, exception: BaseException, severity: Severity = "ERROR"
     ) -> bool:
-        logged = self._log(
-            self._exception_or_user_error_event(exception, severity), self._session_end_event()
-        )
+        logged = self._log(*self._fatal_events(exception, severity))
         self._trigger_flush()
         # wait for the flush to complete
         if _current_loop() is None:
@@ -208,6 +233,7 @@ class Telemetry:
             platform=platform.system(),
             sdk_version=__version__,
             session_id=self._session_id,
+            process_uuid=get_process_uuid(),
             events=events,
         )
 
@@ -324,7 +350,9 @@ def _is_telemetry_enabled() -> bool:
     }
 
 
-def init_telemetry(tinker_provider: AsyncTinkerProvider, session_id: str) -> Telemetry | None:
+def init_telemetry(
+    tinker_provider: AsyncTinkerProvider, session_id: str | None
+) -> Telemetry | None:
     try:
         return Telemetry(tinker_provider, session_id) if _is_telemetry_enabled() else None
     except Exception as e:

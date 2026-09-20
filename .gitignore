@@ -13,3 +13,12 @@ dist
 .envrc
 codegen.log
 Brewfile.lock.json
+
+# NEOFORM local state and web build output
+.neoform/
+node_modules/
+.next/
+playwright-report/
+test-results/
+*.tsbuildinfo
+.coverage

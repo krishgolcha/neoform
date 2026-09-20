@@ -7,6 +7,7 @@ import httpx
 __all__ = [
     "BadRequestError",
     "AuthenticationError",
+    "BillingError",
     "PermissionDeniedError",
     "NotFoundError",
     "ConflictError",
@@ -14,10 +15,6 @@ __all__ = [
     "RateLimitError",
     "InternalServerError",
     "RequestFailedError",
-    "SidecarError",
-    "SidecarStartupError",
-    "SidecarDiedError",
-    "SidecarIPCError",
 ]
 
 if TYPE_CHECKING:
@@ -134,6 +131,12 @@ class AuthenticationError(APIStatusError):
     status_code: int = 401
 
 
+class BillingError(APIStatusError):
+    """HTTP 402: The account has a billing issue, e.g. billing is not set up."""
+
+    status_code: int = 402
+
+
 class PermissionDeniedError(APIStatusError):
     """HTTP 403: Insufficient permissions to access the resource."""
 
@@ -168,22 +171,6 @@ class InternalServerError(APIStatusError):
     """HTTP 500+: An error occurred on the server."""
 
     pass
-
-
-class SidecarError(TinkerError):
-    """Base exception for subprocess sidecar errors."""
-
-
-class SidecarStartupError(SidecarError):
-    """Raised when the sidecar subprocess fails to start or times out."""
-
-
-class SidecarDiedError(SidecarError):
-    """Raised when the sidecar subprocess exits unexpectedly while requests are pending."""
-
-
-class SidecarIPCError(SidecarError):
-    """Raised when communication with the sidecar subprocess fails."""
 
 
 class RequestFailedError(TinkerError):

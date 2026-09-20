@@ -66,9 +66,14 @@ class SampleResponse(google.protobuf.message.Message):
     SEQUENCES_FIELD_NUMBER: builtins.int
     PROMPT_LOGPROBS_FIELD_NUMBER: builtins.int
     TOPK_PROMPT_LOGPROBS_FIELD_NUMBER: builtins.int
+    PROMPT_CACHE_HIT_TOKENS_FIELD_NUMBER: builtins.int
     prompt_logprobs: builtins.bytes
     """np.array(prompt_logprobs, dtype=np.float32).tobytes()
     NaN for missing positions (e.g. first prompt token)
+    """
+    prompt_cache_hit_tokens: builtins.int
+    """Number of prompt tokens billed as prefix-cache hits, counted on the
+    prompt itself regardless of num_samples.
     """
     @property
     def sequences(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[Global___SampledSequence]: ...
@@ -82,9 +87,10 @@ class SampleResponse(google.protobuf.message.Message):
         sequences: collections.abc.Iterable[Global___SampledSequence] | None = ...,
         prompt_logprobs: builtins.bytes | None = ...,
         topk_prompt_logprobs: Global___TopkPromptLogprobs | None = ...,
+        prompt_cache_hit_tokens: builtins.int = ...,
     ) -> None: ...
     def HasField(self, field_name: typing.Literal["_prompt_logprobs", b"_prompt_logprobs", "_topk_prompt_logprobs", b"_topk_prompt_logprobs", "prompt_logprobs", b"prompt_logprobs", "topk_prompt_logprobs", b"topk_prompt_logprobs"]) -> builtins.bool: ...
-    def ClearField(self, field_name: typing.Literal["_prompt_logprobs", b"_prompt_logprobs", "_topk_prompt_logprobs", b"_topk_prompt_logprobs", "prompt_logprobs", b"prompt_logprobs", "sequences", b"sequences", "topk_prompt_logprobs", b"topk_prompt_logprobs"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["_prompt_logprobs", b"_prompt_logprobs", "_topk_prompt_logprobs", b"_topk_prompt_logprobs", "prompt_cache_hit_tokens", b"prompt_cache_hit_tokens", "prompt_logprobs", b"prompt_logprobs", "sequences", b"sequences", "topk_prompt_logprobs", b"topk_prompt_logprobs"]) -> None: ...
     @typing.overload
     def WhichOneof(self, oneof_group: typing.Literal["_prompt_logprobs", b"_prompt_logprobs"]) -> typing.Literal["prompt_logprobs"] | None: ...
     @typing.overload
@@ -325,24 +331,51 @@ class ForwardBackwardRequest(google.protobuf.message.Message):
         ) -> None: ...
         def ClearField(self, field_name: typing.Literal["key", b"key", "value", b"value"]) -> None: ...
 
+    @typing.final
+    class LossFnConfigV2Entry(google.protobuf.message.Message):
+        DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+        KEY_FIELD_NUMBER: builtins.int
+        VALUE_FIELD_NUMBER: builtins.int
+        key: builtins.str
+        @property
+        def value(self) -> Global___LossConfigValue: ...
+        def __init__(
+            self,
+            *,
+            key: builtins.str = ...,
+            value: Global___LossConfigValue | None = ...,
+        ) -> None: ...
+        def HasField(self, field_name: typing.Literal["value", b"value"]) -> builtins.bool: ...
+        def ClearField(self, field_name: typing.Literal["key", b"key", "value", b"value"]) -> None: ...
+
     MODEL_ID_FIELD_NUMBER: builtins.int
     SEQ_ID_FIELD_NUMBER: builtins.int
     DATA_FIELD_NUMBER: builtins.int
     LOSS_FN_FIELD_NUMBER: builtins.int
     LOSS_FN_CONFIG_FIELD_NUMBER: builtins.int
     FORWARD_ONLY_FIELD_NUMBER: builtins.int
+    LOSS_FN_CONFIG_V2_FIELD_NUMBER: builtins.int
     model_id: builtins.str
     seq_id: builtins.int
     loss_fn: builtins.str
     forward_only: builtins.bool
     """When true, the trainer computes loss + loss_fn_outputs without running
-    backward / accumulating gradients. proto3 default false preserves
-    fwd+bwd behavior for older SDKs that don't set this field.
+    backward / accumulating gradients. Default is false.
     """
     @property
     def data(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[Global___Datum]: ...
     @property
-    def loss_fn_config(self) -> google.protobuf.internal.containers.ScalarMap[builtins.str, builtins.float]: ...
+    def loss_fn_config(self) -> google.protobuf.internal.containers.ScalarMap[builtins.str, builtins.float]:
+        """DEPRECATED: legacy float-only loss config. New SDKs mirror float kwargs
+        here for servers that predate loss_fn_config_v2; servers prefer v2 when
+        it is set.
+        """
+
+    @property
+    def loss_fn_config_v2(self) -> google.protobuf.internal.containers.MessageMap[builtins.str, Global___LossConfigValue]:
+        """Loss constructor kwargs. Supersedes loss_fn_config."""
+
     def __init__(
         self,
         *,
@@ -352,10 +385,35 @@ class ForwardBackwardRequest(google.protobuf.message.Message):
         loss_fn: builtins.str = ...,
         loss_fn_config: collections.abc.Mapping[builtins.str, builtins.float] | None = ...,
         forward_only: builtins.bool = ...,
+        loss_fn_config_v2: collections.abc.Mapping[builtins.str, Global___LossConfigValue] | None = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["data", b"data", "forward_only", b"forward_only", "loss_fn", b"loss_fn", "loss_fn_config", b"loss_fn_config", "model_id", b"model_id", "seq_id", b"seq_id"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["data", b"data", "forward_only", b"forward_only", "loss_fn", b"loss_fn", "loss_fn_config", b"loss_fn_config", "loss_fn_config_v2", b"loss_fn_config_v2", "model_id", b"model_id", "seq_id", b"seq_id"]) -> None: ...
 
 Global___ForwardBackwardRequest: typing_extensions.TypeAlias = ForwardBackwardRequest
+
+@typing.final
+class LossConfigValue(google.protobuf.message.Message):
+    """Tagged loss-config value: a narrow union rather than google.protobuf.Value,
+    with room to grow arms (bool/int64) if a loss ever needs them.
+    """
+
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    NUMBER_FIELD_NUMBER: builtins.int
+    TEXT_FIELD_NUMBER: builtins.int
+    number: builtins.float
+    text: builtins.str
+    def __init__(
+        self,
+        *,
+        number: builtins.float = ...,
+        text: builtins.str = ...,
+    ) -> None: ...
+    def HasField(self, field_name: typing.Literal["number", b"number", "text", b"text", "value", b"value"]) -> builtins.bool: ...
+    def ClearField(self, field_name: typing.Literal["number", b"number", "text", b"text", "value", b"value"]) -> None: ...
+    def WhichOneof(self, oneof_group: typing.Literal["value", b"value"]) -> typing.Literal["number", "text"] | None: ...
+
+Global___LossConfigValue: typing_extensions.TypeAlias = LossConfigValue
 
 @typing.final
 class Datum(google.protobuf.message.Message):
@@ -381,19 +439,118 @@ class Datum(google.protobuf.message.Message):
 
     MODEL_INPUT_FIELD_NUMBER: builtins.int
     LOSS_FN_INPUTS_FIELD_NUMBER: builtins.int
+    MODEL_INPUT_SPANS_FIELD_NUMBER: builtins.int
+    LOSS_FN_INPUT_SPANS_FIELD_NUMBER: builtins.int
     @property
     def model_input(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[Global___Chunk]: ...
     @property
     def loss_fn_inputs(self) -> google.protobuf.internal.containers.MessageMap[builtins.str, Global___Tensor]: ...
+    @property
+    def model_input_spans(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[Global___ProvenanceSpan]:
+        """Provenance of the input tokens as assembled: consecutive runs tiling
+        model_input (counts sum to its token length; position comes from
+        order, overlap is unrepresentable). Consumed by forward-pass features.
+        """
+
+    @property
+    def loss_fn_input_spans(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[Global___ProvenanceSpan]:
+        """Attribution of the loss rows: consecutive runs tiling
+        loss_fn_inputs["target_tokens"] (counts sum to its length).
+        """
+
     def __init__(
         self,
         *,
         model_input: collections.abc.Iterable[Global___Chunk] | None = ...,
         loss_fn_inputs: collections.abc.Mapping[builtins.str, Global___Tensor] | None = ...,
+        model_input_spans: collections.abc.Iterable[Global___ProvenanceSpan] | None = ...,
+        loss_fn_input_spans: collections.abc.Iterable[Global___ProvenanceSpan] | None = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["loss_fn_inputs", b"loss_fn_inputs", "model_input", b"model_input"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["loss_fn_input_spans", b"loss_fn_input_spans", "loss_fn_inputs", b"loss_fn_inputs", "model_input", b"model_input", "model_input_spans", b"model_input_spans"]) -> None: ...
 
 Global___Datum: typing_extensions.TypeAlias = Datum
+
+@typing.final
+class ProvenanceSpan(google.protobuf.message.Message):
+    """One provenance claim: where a run of datum tokens came from. Offsets are
+    local to the arm's type.
+    """
+
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    PROMPT_TOKENS_FIELD_NUMBER: builtins.int
+    SAMPLED_TOKENS_FIELD_NUMBER: builtins.int
+    @property
+    def prompt_tokens(self) -> Global___PromptProvenanceSpan: ...
+    @property
+    def sampled_tokens(self) -> Global___SampledProvenanceSpan: ...
+    def __init__(
+        self,
+        *,
+        prompt_tokens: Global___PromptProvenanceSpan | None = ...,
+        sampled_tokens: Global___SampledProvenanceSpan | None = ...,
+    ) -> None: ...
+    def HasField(self, field_name: typing.Literal["prompt_tokens", b"prompt_tokens", "sampled_tokens", b"sampled_tokens", "span", b"span"]) -> builtins.bool: ...
+    def ClearField(self, field_name: typing.Literal["prompt_tokens", b"prompt_tokens", "sampled_tokens", b"sampled_tokens", "span", b"span"]) -> None: ...
+    def WhichOneof(self, oneof_group: typing.Literal["span", b"span"]) -> typing.Literal["prompt_tokens", "sampled_tokens"] | None: ...
+
+Global___ProvenanceSpan: typing_extensions.TypeAlias = ProvenanceSpan
+
+@typing.final
+class PromptProvenanceSpan(google.protobuf.message.Message):
+    """A run of tokens that were provided as sampling input: positions
+    [offset, offset+length) of the named sequence's request prompt.
+    """
+
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    SEQUENCE_ID_FIELD_NUMBER: builtins.int
+    OFFSET_FIELD_NUMBER: builtins.int
+    LENGTH_FIELD_NUMBER: builtins.int
+    sequence_id: builtins.str
+    """SampledSequence.sequence_id of a request whose prompt contained
+    this run.
+    """
+    offset: builtins.int
+    """Position of the run within that request's prompt."""
+    length: builtins.int
+    def __init__(
+        self,
+        *,
+        sequence_id: builtins.str = ...,
+        offset: builtins.int = ...,
+        length: builtins.int = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["length", b"length", "offset", b"offset", "sequence_id", b"sequence_id"]) -> None: ...
+
+Global___PromptProvenanceSpan: typing_extensions.TypeAlias = PromptProvenanceSpan
+
+@typing.final
+class SampledProvenanceSpan(google.protobuf.message.Message):
+    """A run of tokens produced by one sampled sequence: positions
+    [offset, offset+length) of the sequence's sampled tokens.
+    """
+
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    SEQUENCE_ID_FIELD_NUMBER: builtins.int
+    OFFSET_FIELD_NUMBER: builtins.int
+    LENGTH_FIELD_NUMBER: builtins.int
+    sequence_id: builtins.str
+    """SampledSequence.sequence_id of the sequence this run reproduces."""
+    offset: builtins.int
+    """Position of the run within that sequence's sampled tokens."""
+    length: builtins.int
+    def __init__(
+        self,
+        *,
+        sequence_id: builtins.str = ...,
+        offset: builtins.int = ...,
+        length: builtins.int = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["length", b"length", "offset", b"offset", "sequence_id", b"sequence_id"]) -> None: ...
+
+Global___SampledProvenanceSpan: typing_extensions.TypeAlias = SampledProvenanceSpan
 
 @typing.final
 class Chunk(google.protobuf.message.Message):
@@ -401,19 +558,23 @@ class Chunk(google.protobuf.message.Message):
 
     ENCODED_TEXT_FIELD_NUMBER: builtins.int
     IMAGE_FIELD_NUMBER: builtins.int
+    DMEL_FIELD_NUMBER: builtins.int
     @property
     def encoded_text(self) -> Global___EncodedTextChunk: ...
     @property
     def image(self) -> Global___ImageChunk: ...
+    @property
+    def dmel(self) -> Global___DmelChunk: ...
     def __init__(
         self,
         *,
         encoded_text: Global___EncodedTextChunk | None = ...,
         image: Global___ImageChunk | None = ...,
+        dmel: Global___DmelChunk | None = ...,
     ) -> None: ...
-    def HasField(self, field_name: typing.Literal["chunk", b"chunk", "encoded_text", b"encoded_text", "image", b"image"]) -> builtins.bool: ...
-    def ClearField(self, field_name: typing.Literal["chunk", b"chunk", "encoded_text", b"encoded_text", "image", b"image"]) -> None: ...
-    def WhichOneof(self, oneof_group: typing.Literal["chunk", b"chunk"]) -> typing.Literal["encoded_text", "image"] | None: ...
+    def HasField(self, field_name: typing.Literal["chunk", b"chunk", "dmel", b"dmel", "encoded_text", b"encoded_text", "image", b"image"]) -> builtins.bool: ...
+    def ClearField(self, field_name: typing.Literal["chunk", b"chunk", "dmel", b"dmel", "encoded_text", b"encoded_text", "image", b"image"]) -> None: ...
+    def WhichOneof(self, oneof_group: typing.Literal["chunk", b"chunk"]) -> typing.Literal["encoded_text", "image", "dmel"] | None: ...
 
 Global___Chunk: typing_extensions.TypeAlias = Chunk
 
@@ -455,3 +616,103 @@ class ImageChunk(google.protobuf.message.Message):
     def WhichOneof(self, oneof_group: typing.Literal["_expected_tokens", b"_expected_tokens"]) -> typing.Literal["expected_tokens"] | None: ...
 
 Global___ImageChunk: typing_extensions.TypeAlias = ImageChunk
+
+@typing.final
+class DmelChunk(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    DMEL_FIELD_NUMBER: builtins.int
+    dmel: builtins.bytes
+    """Serialized TensorContainer bytes of DMel tokens."""
+    def __init__(
+        self,
+        *,
+        dmel: builtins.bytes = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["dmel", b"dmel"]) -> None: ...
+
+Global___DmelChunk: typing_extensions.TypeAlias = DmelChunk
+
+@typing.final
+class SamplingParams(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    MAX_TOKENS_FIELD_NUMBER: builtins.int
+    SEED_FIELD_NUMBER: builtins.int
+    TEMPERATURE_FIELD_NUMBER: builtins.int
+    TOP_K_FIELD_NUMBER: builtins.int
+    TOP_P_FIELD_NUMBER: builtins.int
+    STOP_STRS_FIELD_NUMBER: builtins.int
+    STOP_TOKENS_FIELD_NUMBER: builtins.int
+    max_tokens: builtins.int
+    seed: builtins.int
+    """Wide enough for any 64-bit seed an SDK caller sends. The api_server
+    folds the value into [0, 2**63 - 1) when it writes this field, so
+    downstream engines still see an int64-safe seed.
+    """
+    temperature: builtins.float
+    top_k: builtins.int
+    top_p: builtins.float
+    @property
+    def stop_strs(self) -> Global___StopStrings: ...
+    @property
+    def stop_tokens(self) -> Global___StopTokens: ...
+    def __init__(
+        self,
+        *,
+        max_tokens: builtins.int | None = ...,
+        seed: builtins.int | None = ...,
+        temperature: builtins.float | None = ...,
+        top_k: builtins.int | None = ...,
+        top_p: builtins.float | None = ...,
+        stop_strs: Global___StopStrings | None = ...,
+        stop_tokens: Global___StopTokens | None = ...,
+    ) -> None: ...
+    def HasField(self, field_name: typing.Literal["_max_tokens", b"_max_tokens", "_seed", b"_seed", "_temperature", b"_temperature", "_top_k", b"_top_k", "_top_p", b"_top_p", "max_tokens", b"max_tokens", "seed", b"seed", "stop", b"stop", "stop_strs", b"stop_strs", "stop_tokens", b"stop_tokens", "temperature", b"temperature", "top_k", b"top_k", "top_p", b"top_p"]) -> builtins.bool: ...
+    def ClearField(self, field_name: typing.Literal["_max_tokens", b"_max_tokens", "_seed", b"_seed", "_temperature", b"_temperature", "_top_k", b"_top_k", "_top_p", b"_top_p", "max_tokens", b"max_tokens", "seed", b"seed", "stop", b"stop", "stop_strs", b"stop_strs", "stop_tokens", b"stop_tokens", "temperature", b"temperature", "top_k", b"top_k", "top_p", b"top_p"]) -> None: ...
+    @typing.overload
+    def WhichOneof(self, oneof_group: typing.Literal["_max_tokens", b"_max_tokens"]) -> typing.Literal["max_tokens"] | None: ...
+    @typing.overload
+    def WhichOneof(self, oneof_group: typing.Literal["_seed", b"_seed"]) -> typing.Literal["seed"] | None: ...
+    @typing.overload
+    def WhichOneof(self, oneof_group: typing.Literal["_temperature", b"_temperature"]) -> typing.Literal["temperature"] | None: ...
+    @typing.overload
+    def WhichOneof(self, oneof_group: typing.Literal["_top_k", b"_top_k"]) -> typing.Literal["top_k"] | None: ...
+    @typing.overload
+    def WhichOneof(self, oneof_group: typing.Literal["_top_p", b"_top_p"]) -> typing.Literal["top_p"] | None: ...
+    @typing.overload
+    def WhichOneof(self, oneof_group: typing.Literal["stop", b"stop"]) -> typing.Literal["stop_strs", "stop_tokens"] | None: ...
+
+Global___SamplingParams: typing_extensions.TypeAlias = SamplingParams
+
+@typing.final
+class StopStrings(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    VALUES_FIELD_NUMBER: builtins.int
+    @property
+    def values(self) -> google.protobuf.internal.containers.RepeatedScalarFieldContainer[builtins.str]: ...
+    def __init__(
+        self,
+        *,
+        values: collections.abc.Iterable[builtins.str] | None = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["values", b"values"]) -> None: ...
+
+Global___StopStrings: typing_extensions.TypeAlias = StopStrings
+
+@typing.final
+class StopTokens(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    VALUES_FIELD_NUMBER: builtins.int
+    @property
+    def values(self) -> google.protobuf.internal.containers.RepeatedScalarFieldContainer[builtins.int]: ...
+    def __init__(
+        self,
+        *,
+        values: collections.abc.Iterable[builtins.int] | None = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing.Literal["values", b"values"]) -> None: ...
+
+Global___StopTokens: typing_extensions.TypeAlias = StopTokens

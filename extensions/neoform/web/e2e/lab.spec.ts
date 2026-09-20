@@ -19,6 +19,8 @@ test("renders the truthful empty lab and launch configuration", async ({ page })
   ).toBeVisible();
   await page.getByRole("button", { name: "Configure first evolution" }).click();
   await expect(page.getByRole("dialog", { name: "Design the search space" })).toBeVisible();
+  await expect(page.getByLabel("Benchmark")).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "Benchmark" })).toHaveValue("arithmetic_exact_match");
   await expect(page.getByText("Manual champion promotion")).toBeVisible();
 });
 

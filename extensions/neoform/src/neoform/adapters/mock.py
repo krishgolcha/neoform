@@ -3,9 +3,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import random
-import time
 
 from neoform.domain import EvaluationResult, EvolutionSpec, Genotype, TrainingResult, Usage
+from neoform.evaluators import EvalItem, run_evaluations, training_pairs_for_spec
 
 from .base import LabAdapter
 
@@ -29,6 +29,7 @@ class MockTinkerAdapter(LabAdapter):
         parent_state: str | None,
     ) -> TrainingResult:
         await asyncio.sleep(0)
+        training_pairs_for_spec(spec)
         rng = random.Random(_seed(candidate_id, genotype.model_dump_json(), parent_state))
         tokens = spec.search.steps_per_candidate * spec.search.batch_size * 384
         return TrainingResult(
@@ -45,28 +46,19 @@ class MockTinkerAdapter(LabAdapter):
     async def evaluate(
         self, sampler_checkpoint: str, spec: EvolutionSpec, genotype: Genotype
     ) -> EvaluationResult:
-        started = time.perf_counter()
         rng = random.Random(_seed(sampler_checkpoint, genotype.model_dump_json()))
         lr_center = 8e-5
         lr_bonus = max(0.0, 0.08 - abs(genotype.learning_rate - lr_center) * 500)
-        scores = {
-            benchmark.name: round(min(0.98, 0.52 + lr_bonus + rng.random() * 0.22), 4)
-            for benchmark in spec.benchmarks
-        }
-        examples = [
-            {
-                "prompt": "If a crew installs 12 panels per hour for 7 hours, how many panels?",
-                "response": "84 panels",
-                "reward": 1,
-            }
-        ]
-        total = sum(item.examples for item in spec.benchmarks)
-        return EvaluationResult(
-            scores=scores,
-            latency_ms=max(1.0, (time.perf_counter() - started) * 1000),
-            usage=Usage(prompt_tokens=total * 128, sample_tokens=total * 192),
-            examples=examples,
-        )
+        threshold = min(0.92, 0.48 + lr_bonus)
+
+        async def complete(item: EvalItem) -> tuple[str, Usage]:
+            await asyncio.sleep(0)
+            text = item.reference_output() if rng.random() < threshold else "I do not know."
+            prompt_tokens = max(8, len(item.prompt.split()) * 2)
+            sample_tokens = max(4, len(text.split()) * 2)
+            return text, Usage(prompt_tokens=prompt_tokens, sample_tokens=sample_tokens)
+
+        return await run_evaluations(spec, genotype, complete)
 
     async def chat(
         self, sampler_checkpoint: str, messages: list[dict[str, str]], **parameters: object
@@ -86,4 +78,3 @@ class MockTinkerAdapter(LabAdapter):
                 }
             ],
         }
-

@@ -13,6 +13,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .domain import EvolutionSpec
+from .evaluators import list_evaluators
 from .pricing import PricingCatalog
 from .runtime import build_runtime
 from .settings import Settings
@@ -23,6 +24,15 @@ console = Console()
 
 def _read_spec(path: Path) -> EvolutionSpec:
     return EvolutionSpec.model_validate_json(path.read_text())
+
+
+@app.command()
+def evaluators() -> None:
+    """List bundled evaluators and dataset sizes."""
+    table = Table("Name", "Examples", "Description")
+    for item in list_evaluators():
+        table.add_row(str(item["name"]), str(item["examples"]), str(item["description"]))
+    console.print(table)
 
 
 @app.command()

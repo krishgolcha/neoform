@@ -20,6 +20,12 @@ def make_client(tmp_path: Path):
 def test_health_and_cost_estimate(tmp_path: Path):
     with make_client(tmp_path) as client:
         assert client.get("/api/health").json()["ok"] is True
+        names = {item["name"] for item in client.get("/api/v1/evaluators").json()["data"]}
+        assert names == {
+            "arithmetic_exact_match",
+            "gsm8k_exact_match",
+            "instruction_following",
+        }
         response = client.post(
             "/api/v1/evolutions/estimate", json={"name": "test", "max_usd": 10}
         )
@@ -42,7 +48,7 @@ def test_create_start_promote_and_chat(tmp_path: Path):
                     "batch_size": 1,
                     "max_sequence_tokens": 64,
                 },
-                "benchmarks": [{"name": "gsm8k", "weight": 1, "examples": 1}],
+                "benchmarks": [{"name": "gsm8k_exact_match", "weight": 1, "examples": 1}],
             },
         )
         assert created.status_code == 201

@@ -50,6 +50,8 @@ type Candidate = {
   genotype: {
     learning_rate: number;
     temperature: number;
+    max_tokens: number;
+    top_p: number;
     loss_function: string;
     advantage_clip: number;
     optimizer_mode: string;
@@ -105,15 +107,41 @@ const defaultSpec = {
   mutations: {
     learning_rate_min: 0.00002,
     learning_rate_max: 0.0002,
-    temperatures: [0.6, 0.8, 1],
+    temperatures: [0, 0.6, 0.8, 1],
+    max_tokens: [32, 64, 128, 256],
+    top_p: [0.9, 1],
     loss_functions: ["cross_entropy"],
     advantage_clips: [1],
     optimizer_modes: ["resume", "reset"],
+    parent_selection: "rank",
   },
   benchmarks: [
     { name: "arithmetic_exact_match", weight: 1, examples: 4 },
   ],
 };
+
+const benchmarkPresets = {
+  arithmetic_exact_match: {
+    label: "Arithmetic exact match",
+    benchmarks: [{ name: "arithmetic_exact_match", weight: 1, examples: 4 }],
+  },
+  gsm8k_exact_match: {
+    label: "GSM8K-style reasoning",
+    benchmarks: [{ name: "gsm8k_exact_match", weight: 1, examples: 8 }],
+  },
+  instruction_following: {
+    label: "Instruction following",
+    benchmarks: [{ name: "instruction_following", weight: 1, examples: 8 }],
+  },
+  mixed: {
+    label: "Weighted mix",
+    benchmarks: [
+      { name: "gsm8k_exact_match", weight: 0.6, examples: 8 },
+      { name: "arithmetic_exact_match", weight: 0.2, examples: 4 },
+      { name: "instruction_following", weight: 0.2, examples: 6 },
+    ],
+  },
+} as const;
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API}${path}`, {
@@ -443,7 +471,7 @@ function CandidateInspector({ candidate, champion, onPromote }: { candidate: Can
     <aside className="inspector panel">
       <div className="inspector-head"><div><span className="section-kicker">SPECIMEN</span><h2>{shortId(candidate.id)}</h2></div><span className={`state state-${candidate.status}`}><StatusDot status={candidate.status} />{candidate.status}</span></div>
       <div className="fitness-ring" style={{ "--fitness": `${(candidate.score ?? 0) * 360}deg` } as React.CSSProperties}><div><strong>{formatScore(candidate.score)}</strong><small>FITNESS</small></div></div>
-      <div className="genotype"><DataRow label="Loss" value={candidate.genotype.loss_function.toUpperCase()} /><DataRow label="Learning rate" value={candidate.genotype.learning_rate.toExponential(2)} /><DataRow label="Temperature" value={candidate.genotype.temperature.toFixed(1)} /><DataRow label="Advantage clip" value={candidate.genotype.advantage_clip.toFixed(1)} /><DataRow label="Optimizer" value={candidate.genotype.optimizer_mode} /></div>
+      <div className="genotype"><DataRow label="Loss" value={candidate.genotype.loss_function.toUpperCase()} /><DataRow label="Learning rate" value={candidate.genotype.learning_rate.toExponential(2)} /><DataRow label="Temperature" value={candidate.genotype.temperature.toFixed(1)} /><DataRow label="Max tokens" value={String(candidate.genotype.max_tokens ?? 64)} /><DataRow label="Optimizer" value={candidate.genotype.optimizer_mode} /></div>
       {candidate.error && <p className="candidate-error">{candidate.error}</p>}
       <button className="promote-button" disabled={candidate.status !== "complete" || champion} onClick={onPromote}>{champion ? <><Check size={15} /> Current champion</> : <><Trophy size={15} /> Promote checkpoint</>}</button>
     </aside>
@@ -471,6 +499,7 @@ function BenchmarkPanel({ candidate, benchmarks }: { candidate: Candidate | null
 function LaunchModal({ connection, onClose, onLaunch }: { connection: string; onClose: () => void; onLaunch: (spec: typeof defaultSpec) => Promise<void> }) {
   const [name, setName] = useState(defaultSpec.name);
   const [budget, setBudget] = useState(defaultSpec.max_usd);
+  const [benchmark, setBenchmark] = useState<keyof typeof benchmarkPresets>("arithmetic_exact_match");
   const [submitting, setSubmitting] = useState(false);
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
@@ -480,10 +509,11 @@ function LaunchModal({ connection, onClose, onLaunch }: { connection: string; on
         <span className="section-kicker">NEW EVOLUTION</span><h2 id="launch-title">Design the search space</h2><p>NEOFORM reserves worst-case cost before any request reaches Tinker.</p>
         <label>Program name<input value={name} onChange={(event) => setName(event.target.value)} /></label>
         <label>Base model<div className="select-like"><span>Qwen/Qwen3.5-4B</span><small>Hybrid · Vision · 4B</small></div></label>
+        <label htmlFor="benchmark-picker">Benchmark<select id="benchmark-picker" value={benchmark} onChange={(event) => setBenchmark(event.target.value as keyof typeof benchmarkPresets)}>{Object.entries(benchmarkPresets).map(([key, preset]) => <option key={key} value={key}>{preset.label}</option>)}</select></label>
         <div className="field-grid"><label>Population<div className="static-field">4 candidates</div></label><label>Generations<div className="static-field">3 cycles</div></label></div>
         <label>Hard budget ceiling<div className="budget-input"><span>$</span><input type="number" min="1" max="100000" value={budget} onChange={(event) => setBudget(Number(event.target.value))} /></div></label>
         <div className="launch-summary"><div><ShieldCheck size={16} /><span>Manual champion promotion</span></div><div><CircleDollarSign size={16} /><span>Conservative token reservation</span></div></div>
-        <button className="primary-button launch-button" disabled={submitting || connection !== "ready" || !name.trim()} onClick={async () => { setSubmitting(true); await onLaunch({ ...defaultSpec, name, max_usd: budget }).finally(() => setSubmitting(false)); }}>{submitting ? <LoaderCircle className="spin" size={16} /> : <Rocket size={16} />} Launch live evolution</button>
+        <button className="primary-button launch-button" disabled={submitting || connection !== "ready" || !name.trim()} onClick={async () => { setSubmitting(true); await onLaunch({ ...defaultSpec, name, max_usd: budget, benchmarks: [...benchmarkPresets[benchmark].benchmarks] } as typeof defaultSpec).finally(() => setSubmitting(false)); }}>{submitting ? <LoaderCircle className="spin" size={16} /> : <Rocket size={16} />} Launch live evolution</button>
       </section>
     </div>
   );

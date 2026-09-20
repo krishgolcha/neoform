@@ -1,0 +1,16 @@
+{"id": "arith-001", "prompt": "Calculate 17 * 23. Give only the answer.", "gold": "391"}
+{"id": "arith-002", "prompt": "A box has 9 rows of 14 bolts. How many bolts?", "gold": "126"}
+{"id": "arith-003", "prompt": "What is 144 divided by 12?", "gold": "12"}
+{"id": "arith-004", "prompt": "A crew works 8 hours at 15 units per hour. Total?", "gold": "120"}
+{"id": "arith-005", "prompt": "Calculate 19 * 17. Give only the answer.", "gold": "323"}
+{"id": "arith-006", "prompt": "What is 225 divided by 15? Give only the answer.", "gold": "15"}
+{"id": "arith-007", "prompt": "A team places 18 beams per day for 6 days. Total?", "gold": "108"}
+{"id": "arith-008", "prompt": "What is 31 + 47? Give only the answer.", "gold": "78"}
+{"id": "arith-009", "prompt": "Compute 64 - 29. Give only the answer.", "gold": "35"}
+{"id": "arith-010", "prompt": "A pallet holds 12 crates of 11 parts. How many parts?", "gold": "132"}
+{"id": "arith-011", "prompt": "What is 8 * 7 + 6? Give only the answer.", "gold": "62"}
+{"id": "arith-012", "prompt": "A tank starts at 90 liters and loses 18. How many remain?", "gold": "72"}
+{"id": "arith-013", "prompt": "What is 250 / 5? Give only the answer.", "gold": "50"}
+{"id": "arith-014", "prompt": "Three racks hold 16 boards each. Total boards?", "gold": "48"}
+{"id": "arith-015", "prompt": "What is 13 * 13? Give only the answer.", "gold": "169"}
+{"id": "arith-016", "prompt": "A shift of 11 people each makes 9 widgets. How many widgets?", "gold": "99"}

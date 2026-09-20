@@ -7,31 +7,38 @@
   <p>
     <a href="https://github.com/krishgolcha/neoform/actions">CI</a> ·
     <a href="https://www.apache.org/licenses/LICENSE-2.0">Apache-2.0</a> ·
+    <a href="https://github.com/krishgolcha/neoform/releases">Releases</a> ·
     <a href="https://tinker-docs.thinkingmachines.ai/">Tinker documentation</a>
   </p>
 </div>
 
 ![NEOFORM evolution lab](docs/images/neoform-lab.png)
 
-NEOFORM is a local-first research lab that sits above the
-[Tinker API](https://github.com/thinking-machines-lab/tinker). It creates competing
-LoRA branches, applies deterministic hyperparameter mutations, evaluates every
-checkpoint, enforces a conservative spend ceiling, and keeps promotion manual.
+NEOFORM is a local lab above the [Tinker API](https://github.com/thinking-machines-lab/tinker).
+It spawns competing LoRA candidates, mutates live-applicable hyperparameters, evaluates
+checkpoints on pluggable benchmarks, enforces a USD spend cap, and leaves champion
+promotion to you.
 
 > [!IMPORTANT]
 > NEOFORM is an independent, unofficial open-source project created and maintained
 > by **Krish Golcha**. It is not endorsed by or affiliated with Thinking Machines Lab.
 
-## What it adds
+## Architecture
 
-- A checkpoint lineage canvas with live candidate state and evidence.
-- Durable evolution orchestration with pause, resume, cancellation, and recovery.
-- Worst-case token reservations that stop work before it can exceed the configured cap.
-- Deterministic mutation and weighted evaluation scoring, with a bundled arithmetic
-  exact-match evaluator for live smoke-scale experiments.
-- Sampler checkpoint probes before evaluation.
-- A manually controlled `neoform://evolutions/{id}/champion` inference alias.
-- REST, replayable server-sent events, a Python CLI, and a polished local web lab.
+```text
+Next.js lab ── REST + SSE ── FastAPI runtime ── Evolution engine
+                                      │              │
+                                      │              ├─ Budget ledger (worst-case USD cap)
+                                      │              ├─ Seeded mutations + parent selection
+                                      │              ├─ Pluggable evaluators (weighted)
+                                      │              └─ SQLite event store
+                                      │
+                                      └─ Tinker SDK ── train / save / sample / probe
+```
+
+NEOFORM creates `WEIGHTS` checkpoints for branching and `SAMPLER_WEIGHTS`
+checkpoints for evaluation. It does not merge or cross over LoRA weights.
+Unsupported loss functions are rejected instead of being silently treated as PPO.
 
 ## Quick start
 
@@ -41,11 +48,13 @@ and a Tinker API key.
 ```bash
 git clone https://github.com/krishgolcha/neoform.git
 cd neoform
+git checkout main
 export TINKER_API_KEY="your-key"
 
 cd extensions/neoform
 uv sync --extra dev
 uv run neoform doctor
+uv run neoform evaluators
 uv run neoform serve
 ```
 
@@ -62,41 +71,61 @@ simulated product mode when Tinker is unavailable; the mock adapter is reserved 
 
 ## Start from a manifest
 
+Cheap smoke (tiny search, arithmetic dataset):
+
 ```bash
 cd extensions/neoform
-uv run neoform estimate examples/reasoning-frontier.json
-uv run neoform evolve examples/reasoning-frontier.json
+uv run neoform estimate examples/smoke-arithmetic.json
+uv run neoform evolve examples/smoke-arithmetic.json
 uv run neoform status
 ```
 
-The bundled manifest uses `Qwen/Qwen3.5-4B`, four candidates per generation,
-three generations, four arithmetic evaluation prompts, and a mandatory $10
-ceiling. Edit the file before submitting it if those limits do not match your budget.
+Other bundled manifests:
 
-## Architecture
+| File | Evaluator | Notes |
+| --- | --- | --- |
+| `examples/smoke-arithmetic.json` | `arithmetic_exact_match` | Smallest live smoke |
+| `examples/reasoning-gsm8k.json` | `gsm8k_exact_match` | Compact GSM8K-style items, no Hugging Face download |
+| `examples/instruction-following.json` | `instruction_following` | JSON / format / constraint checks |
+| `examples/reasoning-frontier.json` | weighted mix | All three evaluators |
 
-```text
-Next.js lab ── REST + SSE ── FastAPI runtime ── Evolution engine
-                                      │              │
-                                      │              ├─ Budget ledger
-                                      │              ├─ Deterministic selection
-                                      │              └─ SQLite event store
-                                      │
-                                      └─ Tinker SDK ── train / save / sample / probe
-```
+CLI: `neoform doctor`, `neoform evaluators`, `neoform estimate`, `neoform serve`,
+`neoform evolve`, `neoform status`, `neoform promote`, `neoform export`.
 
-NEOFORM creates `WEIGHTS` checkpoints for branching and `SAMPLER_WEIGHTS`
-checkpoints for evaluation. It does not claim to merge or cross over LoRA weights.
-The v0.1 live adapter trains with Tinker's documented `cross_entropy` loss. The
-genotype schema retains loss and advantage-clip fields for future evaluator and
-training adapters, but the live adapter rejects unsupported loss functions instead
-of silently treating them as PPO or CISPO.
+## Evaluators
+
+Registry keyed by `BenchmarkSpec.name`. Weighted aggregation is unchanged: the
+candidate fitness is `sum(weight * score[name])`.
+
+| Name | Scoring |
+| --- | --- |
+| `arithmetic_exact_match` | Dataset file of arithmetic items; extract-and-match the first number |
+| `gsm8k_exact_match` | Bundled compact GSM8K-style items; extract the final number (`####` preferred) |
+| `instruction_following` | JSON parse, required keys, regex, lists, prefix/word constraints |
+
+Register another evaluator by implementing `Evaluator` and adding it to
+`neoform.evaluators.registry`. The live Tinker adapter trains and evaluates
+whatever benchmarks you select.
+
+## Mutations
+
+`MutationSpace` samples a deterministic genotype from the evolution seed:
+
+- log-uniform learning rate range
+- temperature, max tokens, top-p
+- curriculum seed range
+- optimizer resume vs reset
+- optional rank / tournament / softmax parent selection (still seeded)
+- offspring mutation rate around a selected parent
+
+The live adapter applies those knobs. Loss functions other than `cross_entropy`
+are rejected before spend.
 
 ## API
 
-The OpenAPI reference is available at `http://127.0.0.1:8787/docs` while the
-engine is running. Important routes include:
+OpenAPI lives at `http://127.0.0.1:8787/docs` while the engine is running.
 
+- `GET /api/v1/evaluators`
 - `POST /api/v1/evolutions/estimate`
 - `POST /api/v1/evolutions`
 - `POST /api/v1/evolutions/{id}/start|pause|resume|cancel`

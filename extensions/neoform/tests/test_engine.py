@@ -28,7 +28,7 @@ def spec():
             batch_size=1,
             max_sequence_tokens=64,
         ),
-        benchmarks=[BenchmarkSpec(name="gsm8k", weight=1, examples=2)],
+        benchmarks=[BenchmarkSpec(name="gsm8k_exact_match", weight=1, examples=2)],
     )
 
 

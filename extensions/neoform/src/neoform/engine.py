@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import math
-import random
 from typing import Any
 
 from .adapters.base import LabAdapter
@@ -14,6 +12,7 @@ from .domain import (
     EvolutionStatus,
     Genotype,
 )
+from .mutations import sample_genotype, select_parent
 from .pricing import ModelPrice, PricingCatalog
 from .storage import Store
 
@@ -33,18 +32,15 @@ class EvolutionEngine:
             )
         return self.store.create_evolution(spec)
 
-    def _genotype(self, spec: EvolutionSpec, generation: int, ordinal: int) -> Genotype:
-        rng = random.Random(f"{spec.seed}:{generation}:{ordinal}")
-        low = math.log(spec.mutations.learning_rate_min)
-        high = math.log(spec.mutations.learning_rate_max)
-        return Genotype(
-            learning_rate=math.exp(rng.uniform(low, high)),
-            temperature=rng.choice(spec.mutations.temperatures),
-            loss_function=rng.choice(spec.mutations.loss_functions),
-            advantage_clip=rng.choice(spec.mutations.advantage_clips),
-            optimizer_mode=rng.choice(spec.mutations.optimizer_modes),
-            curriculum_seed=rng.randint(1, 2**31 - 1),
-        )
+    def _genotype(
+        self,
+        spec: EvolutionSpec,
+        generation: int,
+        ordinal: int,
+        parent: dict[str, Any] | None,
+    ) -> Genotype:
+        parent_genotype = Genotype.model_validate(parent["genotype"]) if parent else None
+        return sample_genotype(spec, generation, ordinal, parent_genotype)
 
     def pause(self, evolution_id: str) -> None:
         self.store.set_evolution_status(evolution_id, EvolutionStatus.PAUSED)
@@ -76,7 +72,6 @@ class EvolutionEngine:
             )
             for generation in range(spec.search.generations):
                 await self._wait_if_paused(evolution_id, control)
-                parents = survivors or [None]
                 generation_candidates = [
                     item
                     for item in self.store.list_candidates(evolution_id)
@@ -84,12 +79,12 @@ class EvolutionEngine:
                 ]
                 if not generation_candidates:
                     for ordinal in range(spec.search.population):
-                        parent = parents[ordinal % len(parents)]
+                        parent = select_parent(survivors, spec, generation, ordinal)
                         self.store.create_candidate(
                             evolution_id,
                             generation,
                             ordinal,
-                            self._genotype(spec, generation, ordinal),
+                            self._genotype(spec, generation, ordinal, parent),
                             parent["id"] if parent else None,
                         )
                     generation_candidates = [

@@ -86,8 +86,9 @@ class PricingCatalog:
             * spec.search.max_sequence_tokens
         )
         eval_examples = sum(item.examples for item in spec.benchmarks)
+        max_out = max(spec.mutations.max_tokens)
         prompt_tokens = candidates * eval_examples * 256
-        sample_tokens = candidates * eval_examples * 512
+        sample_tokens = candidates * eval_examples * max_out
         train_usd = train_tokens * price.train_per_million / 1_000_000
         sample_usd = (
             prompt_tokens * price.prefill_per_million

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import os
-import re
-import time
 from typing import Any
 
 import httpx
 
 from neoform.domain import EvaluationResult, EvolutionSpec, Genotype, TrainingResult, Usage
+from neoform.evaluators import EvalItem, run_evaluations, training_pairs_for_spec
+from neoform.mutations import reject_unsupported_loss
 
 from .base import LabAdapter
 
@@ -38,15 +38,6 @@ class TinkerAdapter(LabAdapter):
             "capabilities": capabilities.model_dump(mode="json"),
         }
 
-    @staticmethod
-    def _examples() -> list[tuple[str, str]]:
-        return [
-            ("Calculate 17 * 23. Give only the answer.", "391"),
-            ("A box has 9 rows of 14 bolts. How many bolts?", "126"),
-            ("What is 144 divided by 12?", "12"),
-            ("A crew works 8 hours at 15 units per hour. Total?", "120"),
-        ]
-
     async def train(
         self,
         candidate_id: str,
@@ -54,10 +45,7 @@ class TinkerAdapter(LabAdapter):
         genotype: Genotype,
         parent_state: str | None,
     ) -> TrainingResult:
-        if genotype.loss_function != "cross_entropy":
-            raise ValueError(
-                "The live Tinker adapter currently supports only cross_entropy training"
-            )
+        reject_unsupported_loss(genotype.loss_function)
 
         from tinker import types
 
@@ -79,7 +67,7 @@ class TinkerAdapter(LabAdapter):
             )
 
         tokenizer = training.get_tokenizer()
-        examples = self._examples()
+        examples = training_pairs_for_spec(spec)
         total_tokens = 0
         losses: list[float] = []
         for step in range(spec.search.steps_per_candidate):
@@ -144,60 +132,28 @@ class TinkerAdapter(LabAdapter):
     async def evaluate(
         self, sampler_checkpoint: str, spec: EvolutionSpec, genotype: Genotype
     ) -> EvaluationResult:
-        supported_benchmark = "arithmetic_exact_match"
-        unsupported = [item.name for item in spec.benchmarks if item.name != supported_benchmark]
-        if unsupported:
-            raise ValueError(
-                "The live Tinker adapter does not have evaluators for: " + ", ".join(unsupported)
-            )
-
         from tinker import types
 
         service = self._service(spec)
         sampling = await service.create_sampling_client_async(model_path=sampler_checkpoint)
         tokenizer = sampling.get_tokenizer()
-        tasks = [
-            ("Calculate 19 * 17. Give only the answer.", "323"),
-            ("What is 225 divided by 15? Give only the answer.", "15"),
-            ("A team places 18 beams per day for 6 days. Total?", "108"),
-            ("What is 31 + 47? Give only the answer.", "78"),
-        ]
-        requested_examples = spec.benchmarks[0].examples
-        if requested_examples > len(tasks):
-            raise ValueError(
-                f"{supported_benchmark} supports at most {len(tasks)} examples in v0.1"
-            )
-        tasks = tasks[:requested_examples]
-        correct = 0
-        prompt_tokens = 0
-        sample_tokens = 0
-        examples = []
-        started = time.perf_counter()
-        for prompt, answer in tasks:
-            tokens = tokenizer.encode(f"User: {prompt}\nAssistant:")
-            prompt_tokens += len(tokens)
+
+        async def complete(item: EvalItem) -> tuple[str, Usage]:
+            tokens = tokenizer.encode(f"User: {item.prompt}\nAssistant:")
             result = await sampling.sample_async(
                 prompt=types.ModelInput.from_ints(tokens),
                 num_samples=1,
                 sampling_params=types.SamplingParams(
-                    max_tokens=64, temperature=genotype.temperature
+                    max_tokens=genotype.max_tokens,
+                    temperature=genotype.temperature,
+                    top_p=genotype.top_p,
                 ),
             )
             sequence = result.sequences[0]
-            sample_tokens += len(sequence.tokens)
             text = tokenizer.decode(sequence.tokens)
-            matched = re.search(r"-?\d+(?:\.\d+)?", text.replace(",", ""))
-            reward = int(bool(matched and matched.group() == answer))
-            correct += reward
-            examples.append({"prompt": prompt, "response": text, "reward": reward})
-        accuracy = correct / len(tasks)
-        scores = {supported_benchmark: accuracy}
-        return EvaluationResult(
-            scores=scores,
-            latency_ms=(time.perf_counter() - started) * 1000 / len(tasks),
-            usage=Usage(prompt_tokens=prompt_tokens, sample_tokens=sample_tokens),
-            examples=examples,
-        )
+            return text, Usage(prompt_tokens=len(tokens), sample_tokens=len(sequence.tokens))
+
+        return await run_evaluations(spec, genotype, complete)
 
     async def chat(
         self, sampler_checkpoint: str, messages: list[dict[str, str]], **parameters: object

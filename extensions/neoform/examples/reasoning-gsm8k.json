@@ -1,8 +1,8 @@
 {
-  "name": "Reasoning frontier",
+  "name": "GSM8K reasoning",
   "base_model": "Qwen/Qwen3.5-4B",
   "seed": 2026,
-  "max_usd": 20,
+  "max_usd": 15,
   "checkpoint_ttl_days": 7,
   "search": {
     "population": 4,
@@ -17,17 +17,16 @@
   "mutations": {
     "learning_rate_min": 0.00002,
     "learning_rate_max": 0.0002,
-    "temperatures": [0.0, 0.6, 0.8, 1.0],
+    "temperatures": [0.0, 0.6, 0.8],
     "max_tokens": [64, 128, 256],
     "top_p": [0.9, 1.0],
     "loss_functions": ["cross_entropy"],
     "optimizer_modes": ["resume", "reset"],
     "parent_selection": "tournament",
-    "tournament_size": 2
+    "tournament_size": 2,
+    "mutation_rate": 0.35
   },
   "benchmarks": [
-    { "name": "gsm8k_exact_match", "weight": 0.6, "examples": 8 },
-    { "name": "arithmetic_exact_match", "weight": 0.2, "examples": 8 },
-    { "name": "instruction_following", "weight": 0.2, "examples": 6 }
+    { "name": "gsm8k_exact_match", "weight": 1.0, "examples": 8 }
   ]
 }

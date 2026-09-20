@@ -41,7 +41,7 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
     application = FastAPI(
         title="NEOFORM API",
         description="Evolutionary post-training orchestration powered by Tinker",
-        version="0.1.0",
+        version="0.2.0",
         lifespan=lifespan,
     )
     application.state.runtime = selected
@@ -66,7 +66,13 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
 
     @application.get("/api/health")
     async def health() -> dict[str, object]:
-        return {"ok": True, "service": "neoform", "version": "0.1.0"}
+        return {"ok": True, "service": "neoform", "version": "0.2.0"}
+
+    @application.get("/api/v1/evaluators")
+    async def evaluators() -> dict[str, object]:
+        from .evaluators import list_evaluators
+
+        return {"data": list_evaluators()}
 
     @application.get("/api/v1/doctor")
     async def doctor() -> dict[str, object]:

@@ -2,7 +2,7 @@ name: NEOFORM
 
 on:
   push:
-    branches: [main, "codex/**"]
+    branches: [main, "codex/**", "cursor/**"]
   pull_request:
 
 permissions:
